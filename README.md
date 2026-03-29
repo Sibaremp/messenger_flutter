@@ -1,4 +1,4 @@
-# caspian_college_messenger
+# college_messenger
 
 Messenger; Chat app; Caspian College
 
