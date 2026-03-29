@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UsersSIBARStudioProjectscaspian_college_messenger -type f -name package.json -o -name *.toml -o -name *.config.js -o -name *.config.ts -o -name gradle.properties -o -name pom.xml)"
+    ]
+  }
+}
