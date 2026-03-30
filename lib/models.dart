@@ -1,9 +1,9 @@
 // ─── Models ───────────────────────────────────────────────────────────────────
 
-/// Discriminates between personal, group, and broadcast (community) chats.
+/// Различает личные, групповые и широковещательные (сообщества) чаты.
 enum ChatType { direct, group, community }
 
-/// File attachment categories used for rendering and MIME handling.
+/// Категории вложений файлов для рендеринга и обработки MIME.
 enum AttachmentType { image, video, document }
 
 /// Статус доставки сообщения (отображается только у своих сообщений)
@@ -14,7 +14,7 @@ enum MessageStatus {
   error,     // ✗  ошибка
 }
 
-/// A file attached to a [Message] (image, video, or document).
+/// Файл, прикреплённый к [Message] (изображение, видео или документ).
 class Attachment {
   final String path;
   final AttachmentType type;
@@ -28,7 +28,7 @@ class Attachment {
     this.fileSize,
   });
 
-  /// Human-readable file size: bytes → КБ → МБ.
+  /// Читаемый размер файла: байты → КБ → МБ.
   String get readableSize {
     if (fileSize == null) return '';
     if (fileSize! < 1024) return '$fileSize Б';
@@ -37,7 +37,7 @@ class Attachment {
   }
 }
 
-/// A contact visible in the contact-picker (app-side registry, not device book).
+/// Контакт, отображаемый в выборщике контактов (реестр приложения, не книга устройства).
 class AppContact {
   final String name;
   final String? group;
@@ -46,9 +46,9 @@ class AppContact {
   const AppContact({required this.name, this.group, this.phone});
 }
 
-/// An individual chat message with optional attachment and delivery status.
+/// Отдельное сообщение чата с необязательным вложением и статусом доставки.
 class Message {
-  // Auto-incremented fallback used when no explicit id is provided.
+  // Автоинкрементный резервный идентификатор, используемый когда явный id не задан.
   static int _nextId = 0;
 
   final String id;
@@ -83,10 +83,10 @@ class Message {
   );
 }
 
-/// Privilege level of a participant inside a group or community chat.
+/// Уровень привилегий участника в групповом чате или сообществе.
 enum MemberRole { creator, admin, member }
 
-/// A participant in a [Chat] with an associated [MemberRole].
+/// Участник [Chat] с назначенной ролью [MemberRole].
 class ChatMember {
   final String name;
   final MemberRole role;
@@ -99,9 +99,9 @@ class ChatMember {
   );
 }
 
-/// Core chat entity containing messages, members, and metadata.
+/// Основная сущность чата, содержащая сообщения, участников и метаданные.
 class Chat {
-  // Auto-incremented fallback used when no explicit id is provided.
+  // Автоинкрементный резервный идентификатор, используемый когда явный id не задан.
   static int _nextId = 0;
 
   final String id;
@@ -146,11 +146,11 @@ class Chat {
   DateTime get lastTime =>
       messages.isNotEmpty ? messages.last.time : DateTime(0);
 
-  /// Community chats are read-only unless the current user is the admin.
+  /// Чаты-сообщества доступны только для чтения, если текущий пользователь не является администратором.
   bool get canWrite =>
       type != ChatType.community || adminName == 'Я';
 
-  // Sentinel value used to detect "not provided" for nullable fields in copyWith
+  // Сигнальное значение для определения «не передано» у nullable-полей в copyWith
   static const _keep = Object();
 
   Chat copyWith({

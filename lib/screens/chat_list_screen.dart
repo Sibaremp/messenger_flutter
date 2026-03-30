@@ -10,7 +10,7 @@ import '../profile_screen.dart' show ProfileStorage, ProfileAvatar, ProfileScree
 import '../widgets/chat_widgets.dart';
 import 'chat_screen.dart';
 
-/// Home screen showing all chats sorted by most-recent message.
+/// Главный экран, отображающий все чаты, отсортированные по последнему сообщению.
 class ChatListScreen extends StatefulWidget {
   final ChatService service;
   const ChatListScreen({super.key, required this.service});
@@ -40,7 +40,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _eventSub = widget.service.events.listen(_handleEvent);
   }
 
-  /// Refreshes the list on any service event (message, edit, delete, etc.).
+  /// Обновляет список при любом событии сервиса (сообщение, редактирование, удаление и т. д.).
   void _handleEvent(ChatEvent event) {
     if (!mounted) return;
     _loadChats();
@@ -62,7 +62,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     super.dispose();
   }
 
-  /// Returns a copy of [_chats] sorted newest-first by last message time.
+  /// Возвращает копию [_chats], отсортированную от новых к старым по времени последнего сообщения.
   List<Chat> get _sortedChats =>
       [..._chats]..sort((a, b) => b.lastTime.compareTo(a.lastTime));
 
@@ -154,7 +154,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final chat = await widget.service.createDirectChat(contactName: name);
     if (!mounted) return;
 
-    // Add to contacts if not present
+    // Добавляем в контакты, если ещё не присутствует
     if (!_contacts.any((c) => c.name == name)) {
       setState(() => _contacts.add(AppContact(name: name)));
     }
@@ -504,7 +504,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
   bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 
-  /// Returns true if any of the contact's phone numbers matches a registered user.
+  /// Возвращает true, если хотя бы один номер телефона контакта совпадает с зарегистрированным пользователем.
   bool _isInApp(fc.Contact contact) {
     for (final p in contact.phones) {
       final normalized = AuthService.normalizePhone(p.number);
@@ -689,7 +689,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
             return _buildContactList(filteredApp, filteredDevice);
           }
 
-          // Не должно достигаться (initState запускает загрузку)
+          // Не должно достигаться (initState запускает загрузку контактов)
           return const SizedBox.shrink();
         }
 

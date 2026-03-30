@@ -1,10 +1,10 @@
 import 'dart:async';
 import '../models.dart';
 
-// ── Events (sealed) ─────────────────────────────────────────────────────────
+// ── События (sealed) ────────────────────────────────────────────────────────
 sealed class ChatEvent {}
 
-/// Fired when a new message arrives (sent locally or received remotely).
+/// Вызывается при получении нового сообщения (отправленного локально или удалённо).
 class MessageReceived extends ChatEvent {
   final String chatId;
   final Message message;
@@ -29,10 +29,10 @@ class ChatUpdated extends ChatEvent {
   ChatUpdated(this.chat);
 }
 
-// ── Abstract interface ────────────────────────────────────────────────────────
+// ── Абстрактный интерфейс ─────────────────────────────────────────────────────
 
-/// Contract for all chat back-ends (local, remote, mock).
-/// Screens depend on this interface, not on any concrete implementation.
+/// Контракт для всех бэкендов чата (локальный, удалённый, mock).
+/// Экраны зависят от этого интерфейса, а не от конкретной реализации.
 abstract class ChatService {
   Future<List<Chat>> loadChats();
 
@@ -75,7 +75,7 @@ abstract class ChatService {
   Future<void> dispose();
 }
 
-// ── Local (in-memory) implementation ─────────────────────────────────────────
+// ── Локальная (in-memory) реализация ──────────────────────────────────────────
 class LocalChatService implements ChatService {
   final List<Chat> _chats;
   final _controller = StreamController<ChatEvent>.broadcast();
@@ -111,7 +111,7 @@ class LocalChatService implements ChatService {
     ),
   ];
 
-  /// Returns the list index for [chatId], or -1 if not found.
+  /// Возвращает индекс в списке для [chatId] или -1, если не найден.
   int _idx(String chatId) => _chats.indexWhere((c) => c.id == chatId);
 
   @override
@@ -160,7 +160,7 @@ class LocalChatService implements ChatService {
   }) async {
     final i = _idx(chatId);
     if (i == -1) throw StateError('Chat not found: $chatId');
-    final idSet = messageIds.toSet(); // O(1) lookup vs iterating a list
+    final idSet = messageIds.toSet(); // O(1) поиск вместо перебора списка
     final msgs = _chats[i].messages.where((m) => !idSet.contains(m.id)).toList();
     final updated = _chats[i].copyWith(messages: msgs);
     _chats[i] = updated;
@@ -188,7 +188,7 @@ class LocalChatService implements ChatService {
 
   @override
   Future<Chat> createDirectChat({required String contactName}) async {
-    // Re-use the existing chat rather than creating a duplicate.
+    // Повторно использует существующий чат вместо создания дубликата.
     final existing = _chats.where(
       (c) => c.name == contactName && c.type == ChatType.direct,
     ).firstOrNull;

@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app_constants.dart';
 
-/// User-selectable theme preference (persisted in SharedPreferences).
+/// Пользовательское предпочтение темы (сохраняется в SharedPreferences).
 enum AppThemeMode { light, dark, system }
 
-/// Static factory for the app's light and dark [ThemeData] objects.
+/// Статическая фабрика для объектов [ThemeData] светлой и тёмной темы приложения.
 class AppTheme {
   static ThemeData get light => ThemeData(
     brightness: Brightness.light,
@@ -42,13 +42,13 @@ class AppTheme {
   );
 }
 
-/// Wraps the widget tree with theme state and exposes [ThemeProvider.of] for
-/// descendants to read or change the active theme.
+/// Оборачивает дерево виджетов состоянием темы и предоставляет [ThemeProvider.of]
+/// для дочерних элементов, чтобы они могли читать или изменять активную тему.
 class ThemeProvider extends StatefulWidget {
   final Widget child;
   const ThemeProvider({super.key, required this.child});
 
-  /// Retrieves the nearest [ThemeProviderState] from the widget tree.
+  /// Возвращает ближайший [ThemeProviderState] из дерева виджетов.
   static ThemeProviderState of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<_ThemeInherited>()!.state;
 
@@ -74,7 +74,7 @@ class ThemeProviderState extends State<ThemeProvider> {
     _load();
   }
 
-  /// Reads the persisted theme preference; falls back to [AppThemeMode.system].
+  /// Считывает сохранённое предпочтение темы; использует [AppThemeMode.system] как резервный вариант.
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(_key);

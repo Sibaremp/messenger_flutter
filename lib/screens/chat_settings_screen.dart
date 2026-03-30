@@ -4,8 +4,8 @@ import 'package:image_picker/image_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
 
-/// Allows editing a chat's name, description, and avatar.
-/// Returns the updated [Chat] via [Navigator.pop] on save.
+/// Позволяет редактировать имя, описание и аватар чата.
+/// Возвращает обновлённый [Chat] через [Navigator.pop] при сохранении.
 class ChatSettingsScreen extends StatefulWidget {
   final Chat chat;
 
@@ -36,8 +36,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     super.dispose();
   }
 
-  /// Picks and resizes an avatar image from the given [source].
-  /// Images are capped at 512×512 px to keep storage small.
+  /// Выбирает и изменяет размер аватарного изображения из указанного [source].
+  /// Изображения ограничены 512×512 пикселей для экономии памяти.
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(
@@ -129,7 +129,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
     final updated = widget.chat.copyWith(
       name: name,
-      // Store null rather than an empty string for missing descriptions.
+      // Сохраняем null вместо пустой строки при отсутствии описания.
       description: _descController.text.trim().isEmpty
           ? null
           : _descController.text.trim(),
@@ -360,7 +360,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   }
 }
 
-/// Small coloured label showing a member's role (creator, admin).
+/// Небольшая цветная метка, отображающая роль участника (создатель, админ).
 class _RoleBadge extends StatelessWidget {
   final String label;
   final Color color;

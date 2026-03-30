@@ -90,7 +90,7 @@ class AuthService {
       phone.replaceAll(RegExp(r'\D'), '');
 
   // ── Реестр зарегистрированных номеров ─────────────────────────────────────
-  // Хранит все номера, когда-либо зарегистрированные на устройстве.
+  // Хранит все номера, когда-либо зарегистрированные на этом устройстве.
   // В реальном приложении это был бы серверный запрос.
 
   static Future<void> addRegisteredPhone(String phone) async {
@@ -438,7 +438,7 @@ class _LoginFormState extends State<_LoginForm> {
         login: _loginController.text.trim(),
       );
       if (!mounted) return;
-      // Сообщаем родителю — он сам откроет нужный экран
+      // Уведомляем родителя — он самостоятельно откроет нужный экран
       widget.onLoginSuccess();
     } else {
       setState(() => _isLoading = false);
@@ -459,7 +459,7 @@ class _LoginFormState extends State<_LoginForm> {
       key: _formKey,
       child: Column(
         children: [
-          // Переключатель Email/Телефон — только на Android
+          // Переключатель Email / Телефон — только на Android
           if (SimService.isSupported) ...[
             _LoginToggle(
               usePhone: _usePhone,
@@ -537,7 +537,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   final _phoneController = TextEditingController();
 
   String? _selectedGroup;
-  bool _groupTouched = false; // показывать ошибку группы только после первой попытки сабмита
+  bool _groupTouched = false; // показывать ошибку группы только после первой попытки отправки
 
   bool _usePhone = false;
   bool _obscurePassword = true;
@@ -584,7 +584,7 @@ class _RegisterFormState extends State<_RegisterForm> {
         if (sims.length == 1) {
           _applySimCard(sims.first);
         } else {
-          // Два слота — показываем выбор
+          // Два слота — показываем диалог выбора
           _showSimPickerDialog(sims);
         }
     }
@@ -851,7 +851,7 @@ class _ToggleChip extends StatelessWidget {
 
 class _PhoneField extends StatelessWidget {
   final TextEditingController controller;
-  /// Если передан — показываем кнопку «Получить из SIM»
+  /// Если передан — показываем кнопку «Получить из SIM-карты»
   final VoidCallback? onSimTap;
   final bool simLoading;
 
