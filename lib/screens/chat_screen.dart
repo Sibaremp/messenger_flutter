@@ -8,6 +8,7 @@ import '../services/chat_service.dart';
 import '../widgets/chat_widgets.dart';
 import '../profile_screen.dart' show ProfileStorage;
 import 'chat_settings_screen.dart';
+import 'contact_profile_screen.dart';
 
 /// Полноэкранное представление одного чата: список сообщений, панель ввода и выбор медиа.
 class ChatScreen extends StatefulWidget {
@@ -446,6 +447,26 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Открывает экран профиля собеседника (только для личных чатов).
+  void _openContactProfile() {
+    if (_currentChat.type != ChatType.direct) return;
+    // Ищем контакт по имени, чтобы передать номер телефона.
+    final contact = widget.contacts
+        .where((c) => c.name == _currentChat.name)
+        .firstOrNull;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ContactProfileScreen(
+          name: _currentChat.name,
+          avatarPath: _currentChat.avatarPath,
+          description: _currentChat.description,
+          phone: contact?.phone,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openSettings() async {
     final updated = await Navigator.push<Chat>(
       context,
@@ -518,27 +539,38 @@ class _ChatScreenState extends State<ChatScreen> {
                       padding: EdgeInsets.zero,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
-                    ChatAvatar(
-                      type: chat.type,
-                      avatarPath: chat.avatarPath,
-                      radius: AppSizes.avatarRadiusSmall,
+                    GestureDetector(
+                      onTap: chat.type == ChatType.direct
+                          ? _openContactProfile
+                          : null,
+                      child: ChatAvatar(
+                        type: chat.type,
+                        avatarPath: chat.avatarPath,
+                        radius: AppSizes.avatarRadiusSmall,
+                      ),
                     ),
                   ],
                 ),
               ),
-              title: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(chat.name),
-                  if (chat.type != ChatType.direct)
-                    Text(
-                      chat.type == ChatType.group
-                          ? '${chat.members.length + 1} участников'
-                          : 'Сообщество · ${chat.members.length + 1} подписчиков',
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.normal),
-                    ),
-                ],
+              title: GestureDetector(
+                onTap: chat.type == ChatType.direct
+                    ? _openContactProfile
+                    : null,
+                behavior: HitTestBehavior.opaque,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(chat.name),
+                    if (chat.type != ChatType.direct)
+                      Text(
+                        chat.type == ChatType.group
+                            ? '${chat.members.length + 1} участников'
+                            : 'Сообщество · ${chat.members.length + 1} подписчиков',
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.normal),
+                      ),
+                  ],
+                ),
               ),
               actions: [
                 if (chat.type != ChatType.direct)
