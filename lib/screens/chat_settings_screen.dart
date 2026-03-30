@@ -191,6 +191,31 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     );
   }
 
+  /// Подтверждение удаления участника через диалог.
+  void _confirmRemove(ChatMember member) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить участника?'),
+        content: Text('«${member.name}» будет исключён из чата.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _members.remove(member));
+            },
+            child: const Text('Удалить',
+                style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
@@ -424,18 +449,35 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                     child: Icon(Icons.person, color: Colors.white, size: 18),
                   ),
                   title: Text(m.name),
-                  // Подсказка: создателя нельзя изменить; остальных — можно тапнуть
+                  // Подсказка для участников с изменяемой ролью
                   subtitle: m.role == MemberRole.creator
                       ? null
                       : const Text(
                           'Нажмите для управления ролью',
                           style: TextStyle(fontSize: 11, color: AppColors.subtle),
                         ),
-                  trailing: m.role == MemberRole.creator
-                      ? const _RoleBadge(label: 'Создатель', color: AppColors.primary)
-                      : m.role == MemberRole.admin
-                          ? const _RoleBadge(label: 'Админ', color: Colors.blue)
-                          : null,
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Бейдж роли (кроме обычного участника)
+                      if (m.role == MemberRole.creator)
+                        const _RoleBadge(label: 'Создатель', color: AppColors.primary)
+                      else if (m.role == MemberRole.admin)
+                        const _RoleBadge(label: 'Админ', color: Colors.blue),
+                      // Кнопка удаления — только для не-создателей
+                      if (m.role != MemberRole.creator) ...[
+                        const SizedBox(width: 4),
+                        IconButton(
+                          icon: const Icon(Icons.person_remove_outlined,
+                              color: Colors.red, size: 20),
+                          tooltip: 'Удалить участника',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () => _confirmRemove(m),
+                        ),
+                      ],
+                    ],
+                  ),
                   onTap: m.role != MemberRole.creator
                       ? () => _showRoleDialog(m)
                       : null,

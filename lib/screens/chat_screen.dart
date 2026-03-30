@@ -9,6 +9,7 @@ import '../widgets/chat_widgets.dart';
 import '../profile_screen.dart' show ProfileStorage;
 import 'chat_settings_screen.dart';
 import 'contact_profile_screen.dart';
+import 'group_profile_screen.dart';
 
 /// Полноэкранное представление одного чата: список сообщений, панель ввода и выбор медиа.
 class ChatScreen extends StatefulWidget {
@@ -447,6 +448,16 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Открывает профиль группы / сообщества (только для не-личных чатов).
+  void _openGroupProfile() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GroupProfileScreen(chat: _currentChat),
+      ),
+    );
+  }
+
   /// Открывает экран профиля собеседника (только для личных чатов).
   void _openContactProfile() {
     if (_currentChat.type != ChatType.direct) return;
@@ -542,7 +553,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     GestureDetector(
                       onTap: chat.type == ChatType.direct
                           ? _openContactProfile
-                          : _openSettings,
+                          : _openGroupProfile,
                       child: ChatAvatar(
                         type: chat.type,
                         avatarPath: chat.avatarPath,
@@ -555,7 +566,7 @@ class _ChatScreenState extends State<ChatScreen> {
               title: GestureDetector(
                 onTap: chat.type == ChatType.direct
                     ? _openContactProfile
-                    : _openSettings,
+                    : _openGroupProfile,
                 behavior: HitTestBehavior.opaque,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
