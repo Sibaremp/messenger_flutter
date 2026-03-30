@@ -20,6 +20,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   late final TextEditingController _descController;
   String? _avatarPath;
   bool _isSaving = false;
+  // Мутабельная копия списка участников — для изменения ролей без немедленного сохранения.
+  late List<ChatMember> _members;
 
   @override
   void initState() {
@@ -27,6 +29,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     _nameController  = TextEditingController(text: widget.chat.name);
     _descController  = TextEditingController(text: widget.chat.description ?? '');
     _avatarPath      = widget.chat.avatarPath;
+    _members         = List.from(widget.chat.members);
   }
 
   @override
@@ -113,6 +116,81 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     );
   }
 
+  /// Показывает диалог выбора роли для [member].
+  /// Создатель не может менять свою роль — он всегда остаётся создателем.
+  void _showRoleDialog(ChatMember member) {
+    if (member.role == MemberRole.creator) return; // создатель неизменяем
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  member.name,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            // Назначить / снять администратора
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: member.role == MemberRole.admin
+                    ? Colors.orange.withValues(alpha: 0.15)
+                    : Colors.blue.withValues(alpha: 0.15),
+                child: Icon(
+                  member.role == MemberRole.admin
+                      ? Icons.person_remove_outlined
+                      : Icons.admin_panel_settings_outlined,
+                  color: member.role == MemberRole.admin
+                      ? Colors.orange
+                      : Colors.blue,
+                  size: 20,
+                ),
+              ),
+              title: Text(
+                member.role == MemberRole.admin
+                    ? 'Снять роль администратора'
+                    : 'Назначить администратором',
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                final newRole = member.role == MemberRole.admin
+                    ? MemberRole.member
+                    : MemberRole.admin;
+                setState(() {
+                  final idx = _members.indexOf(member);
+                  if (idx != -1) {
+                    _members[idx] = member.copyWith(role: newRole);
+                  }
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
@@ -134,6 +212,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           ? null
           : _descController.text.trim(),
       avatarPath: _avatarPath,
+      members: _members,
     );
 
     if (!mounted) return;
@@ -322,12 +401,12 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ],
               ),
             ),
-            if (widget.chat.members.isNotEmpty) ...[
+            if (_members.isNotEmpty) ...[
               const SizedBox(height: 24),
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'Участники (${widget.chat.members.length})',
+                  'Участники (${_members.length})',
                   style: const TextStyle(
                     fontWeight: FontWeight.w600,
                     fontSize: 14,
@@ -336,7 +415,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-              ...widget.chat.members.map((m) => Container(
+              ..._members.map((m) => Container(
                 margin: const EdgeInsets.only(bottom: 4),
                 color: Theme.of(context).cardColor,
                 child: ListTile(
@@ -345,11 +424,21 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                     child: Icon(Icons.person, color: Colors.white, size: 18),
                   ),
                   title: Text(m.name),
+                  // Подсказка: создателя нельзя изменить; остальных — можно тапнуть
+                  subtitle: m.role == MemberRole.creator
+                      ? null
+                      : const Text(
+                          'Нажмите для управления ролью',
+                          style: TextStyle(fontSize: 11, color: AppColors.subtle),
+                        ),
                   trailing: m.role == MemberRole.creator
                       ? const _RoleBadge(label: 'Создатель', color: AppColors.primary)
                       : m.role == MemberRole.admin
                           ? const _RoleBadge(label: 'Админ', color: Colors.blue)
                           : null,
+                  onTap: m.role != MemberRole.creator
+                      ? () => _showRoleDialog(m)
+                      : null,
                 ),
               )),
             ],

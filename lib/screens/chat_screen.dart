@@ -542,7 +542,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     GestureDetector(
                       onTap: chat.type == ChatType.direct
                           ? _openContactProfile
-                          : null,
+                          : _openSettings,
                       child: ChatAvatar(
                         type: chat.type,
                         avatarPath: chat.avatarPath,
@@ -555,7 +555,7 @@ class _ChatScreenState extends State<ChatScreen> {
               title: GestureDetector(
                 onTap: chat.type == ChatType.direct
                     ? _openContactProfile
-                    : null,
+                    : _openSettings,
                 behavior: HitTestBehavior.opaque,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
