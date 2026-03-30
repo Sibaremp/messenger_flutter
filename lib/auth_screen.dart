@@ -231,8 +231,10 @@ class _AuthScreenState extends State<AuthScreen>
 
   @override
   Widget build(BuildContext context) {
+    final cardColor = Theme.of(context).cardColor;
+    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -258,18 +260,17 @@ class _AuthScreenState extends State<AuthScreen>
                 style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFF212121),
                 ),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'Войдите или создайте аккаунт',
-                style: TextStyle(fontSize: 14, color: Color(0xFF757575)),
+                style: TextStyle(fontSize: 14, color: subtleColor),
               ),
               const SizedBox(height: 32),
               Container(
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: cardColor,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: TabBar(
@@ -629,35 +630,32 @@ class _ToggleChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cardColor   = Theme.of(context).cardColor;
+    final borderColor = Theme.of(context).dividerColor;
+    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFFF6F00) : Colors.white,
+          color: selected ? const Color(0xFFFF6F00) : cardColor,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: selected
-                ? const Color(0xFFFF6F00)
-                : const Color(0xFFE0E0E0),
+            color: selected ? const Color(0xFFFF6F00) : borderColor,
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              icon,
-              size: 16,
-              color: selected ? Colors.white : const Color(0xFF757575),
-            ),
+            Icon(icon, size: 16,
+                color: selected ? Colors.white : subtleColor),
             const SizedBox(width: 6),
-            Text(
-              label,
+            Text(label,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
-                color: selected ? Colors.white : const Color(0xFF757575),
+                color: selected ? Colors.white : subtleColor,
               ),
             ),
           ],
@@ -689,8 +687,11 @@ class _PhoneField extends StatelessWidget {
         if (digits.length < 10) return 'Некорректный номер';
         return null;
       },
-      decoration: _inputDecoration('Номер телефона', Icons.phone_outlined,
-          hintText: '+7 (999) 000-00-00'),
+      decoration: _inputDecoration(
+        'Номер телефона', Icons.phone_outlined,
+        Theme.of(context).cardColor,
+        hintText: '+7 (999) 000-00-00',
+      ),
     );
   }
 }
@@ -699,7 +700,8 @@ class _PhoneField extends StatelessWidget {
 
 InputDecoration _inputDecoration(
   String label,
-  IconData icon, {
+  IconData icon,
+  Color fillColor, {
   String? hintText,
   Widget? suffixIcon,
 }) {
@@ -709,7 +711,7 @@ InputDecoration _inputDecoration(
     prefixIcon: Icon(icon, color: const Color(0xFFFF6F00)),
     suffixIcon: suffixIcon,
     filled: true,
-    fillColor: Colors.white,
+    fillColor: fillColor,
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
       borderSide: BorderSide.none,
@@ -759,7 +761,10 @@ class _AuthField extends StatelessWidget {
       obscureText: obscureText,
       keyboardType: keyboardType,
       validator: validator,
-      decoration: _inputDecoration(label, icon, suffixIcon: suffixIcon),
+      decoration: _inputDecoration(
+        label, icon, Theme.of(context).cardColor,
+        suffixIcon: suffixIcon,
+      ),
     );
   }
 }
@@ -857,6 +862,8 @@ class _GroupSelectField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasValue = value != null;
+    final cardColor   = Theme.of(context).cardColor;
+    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
     return GestureDetector(
       onTap: () => _openPicker(context),
       child: Column(
@@ -866,7 +873,7 @@ class _GroupSelectField extends StatelessWidget {
             height: 56,
             padding: const EdgeInsets.symmetric(horizontal: 12),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: cardColor,
               borderRadius: BorderRadius.circular(12),
               border: showError
                   ? Border.all(color: const Color(0xFFE53935), width: 1.5)
@@ -881,13 +888,11 @@ class _GroupSelectField extends StatelessWidget {
                     hasValue ? value! : 'Учебная группа',
                     style: TextStyle(
                       fontSize: 16,
-                      color: hasValue
-                          ? const Color(0xFF212121)
-                          : const Color(0xFF9E9E9E),
+                      color: hasValue ? null : subtleColor,
                     ),
                   ),
                 ),
-                const Icon(Icons.expand_more, color: Color(0xFF757575)),
+                Icon(Icons.expand_more, color: subtleColor),
               ],
             ),
           ),
@@ -972,7 +977,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
                 hintText: 'Поиск…',
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
-                fillColor: const Color(0xFFF5F5F5),
+                fillColor: Theme.of(context).scaffoldBackgroundColor,
                 contentPadding: EdgeInsets.zero,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
@@ -999,7 +1004,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
                         leading: CircleAvatar(
                           backgroundColor: isSelected
                               ? const Color(0xFFFF6F00)
-                              : const Color(0xFFF5F5F5),
+                              : Theme.of(context).scaffoldBackgroundColor,
                           child: Text(
                             group.split('-').first,
                             style: TextStyle(
