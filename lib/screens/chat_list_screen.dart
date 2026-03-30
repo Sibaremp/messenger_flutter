@@ -472,9 +472,10 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
   final _searchController = TextEditingController();
   String _query = '';
 
-  // Контакты устройства: null = не загружены, [] = загружены (пусто)
+  // Контакты устройства: null = ещё не загружены, [] = загружены (пусто)
   List<fc.Contact>? _deviceContacts;
   bool _loadingDevice = false;
+  bool _permissionDenied = false;
 
   // Реестр зарегистрированных номеров (только цифры)
   Set<String> _registeredPhones = {};
@@ -483,6 +484,8 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
   void initState() {
     super.initState();
     _loadRegisteredPhones();
+    // На мобильных — сразу грузим контакты телефона
+    if (_isMobile) _loadDeviceContacts();
   }
 
   Future<void> _loadRegisteredPhones() async {
@@ -531,63 +534,18 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
       .any((c) => c.name == name && c.type == ChatType.direct);
 
   Future<void> _loadDeviceContacts() async {
-    setState(() => _loadingDevice = true);
+    if (!mounted) return;
+    setState(() { _loadingDevice = true; _permissionDenied = false; });
     final granted = await fc.FlutterContacts.requestPermission(readonly: true);
     if (!mounted) return;
     if (!granted) {
-      setState(() => _loadingDevice = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Нет доступа к контактам'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      setState(() { _loadingDevice = false; _permissionDenied = true; });
       return;
     }
     final contacts = await fc.FlutterContacts.getContacts(withProperties: true);
-    if (mounted) setState(() { _deviceContacts = contacts; _loadingDevice = false; });
-  }
-
-  void _showAddContactDialog() {
-    final ctrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (dlg) => AlertDialog(
-        title: const Text('Новый контакт'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(
-            labelText: 'Имя пользователя',
-            prefixIcon: Icon(Icons.person_outline),
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (v) {
-            final name = v.trim();
-            if (name.isEmpty) return;
-            Navigator.of(dlg).pop();
-            if (mounted) Navigator.of(context).pop(name);
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dlg).pop(),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final name = ctrl.text.trim();
-              if (name.isEmpty) return;
-              Navigator.of(dlg).pop();
-              if (mounted) Navigator.of(context).pop(name);
-            },
-            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-            child: const Text('Создать'),
-          ),
-        ],
-      ),
-    );
+    if (mounted) {
+      setState(() { _deviceContacts = contacts; _loadingDevice = false; });
+    }
   }
 
   Widget _openBadge() => Container(
@@ -631,10 +589,9 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredApp = _filteredApp;
+    final filteredApp    = _filteredApp;
     final filteredDevice = _filteredDevice;
-    final deviceLoaded = _deviceContacts != null;
-    final showSectionHeaders = deviceLoaded || _isMobile;
+    final deviceLoaded   = _deviceContacts != null;
 
     return Scaffold(
       appBar: AppBar(
@@ -647,7 +604,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
               controller: _searchController,
               onChanged: (v) => setState(() => _query = v),
               decoration: InputDecoration(
-                hintText: 'Поиск по имени или группе…',
+                hintText: 'Поиск по имени или номеру…',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _query.isNotEmpty
                     ? IconButton(
@@ -670,148 +627,197 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
           ),
         ),
       ),
-      body: ListView(
-        children: [
-          // ── Добавить вручную ─────────────────────────────────────────
-          ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: AppColors.primary,
-              child: Icon(Icons.person_add_alt_1, color: Colors.white),
-            ),
-            title: const Text('Новый контакт',
-                style: TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: const Text('Добавить пользователя по имени'),
-            onTap: _showAddContactDialog,
-          ),
-
-          // ── Импорт из телефона (только Android/iOS) ──────────────────
-          if (_isMobile && !deviceLoaded)
-            ListTile(
-              leading: CircleAvatar(
-                backgroundColor: AppColors.primary.withValues(alpha: 0.12),
-                child: _loadingDevice
-                    ? const SizedBox(
-                        width: 20, height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primary,
-                        ),
-                      )
-                    : const Icon(Icons.contacts_outlined,
-                        color: AppColors.primary),
-              ),
-              title: const Text('Из телефона',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Импортировать контакты устройства'),
-              onTap: _loadingDevice ? null : _loadDeviceContacts,
-            ),
-
-          const Divider(height: 1),
-
-          // ── Заголовок «Мои контакты» (если показаны два раздела) ─────
-          if (showSectionHeaders)
-            _SectionHeader(
-              title: _query.isEmpty
-                  ? 'Мои контакты'
-                  : 'Мои контакты (${filteredApp.length})',
-            ),
-
-          // ── Список контактов приложения ───────────────────────────────
-          if (filteredApp.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 20),
-              child: Center(
-                child: Text('Контакты не найдены',
-                    style: TextStyle(color: AppColors.subtle)),
-              ),
-            )
-          else
-            ...filteredApp.map((contact) {
-              final hasChat = _hasChat(contact.name);
-              return Column(
+      body: Builder(builder: (context) {
+        // ── Мобильные: загружаем контакты телефона ─────────────────────
+        if (_isMobile) {
+          // Идёт загрузка
+          if (_loadingDevice) {
+            return const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  ListTile(
-                    leading: const CircleAvatar(
-                      backgroundColor: AppColors.primary,
-                      child: Icon(Icons.person, color: Colors.white, size: 20),
-                    ),
-                    title: Text(contact.name),
-                    subtitle: contact.group != null
-                        ? Text(contact.group!,
-                            style: const TextStyle(
-                                fontSize: 12, color: AppColors.subtle))
-                        : null,
-                    trailing: hasChat ? _openBadge() : null,
-                    onTap: () => Navigator.of(context).pop(contact.name),
-                  ),
-                  const Divider(height: 1, indent: 72),
-                ],
-              );
-            }),
-
-          // ── Контакты устройства ───────────────────────────────────────
-          if (deviceLoaded) ...[
-            _SectionHeader(
-              title: _query.isEmpty
-                  ? 'Из телефона'
-                  : 'Из телефона (${filteredDevice.length})',
-              action: TextButton(
-                onPressed: () =>
-                    setState(() => _deviceContacts = null),
-                child: const Text('Скрыть',
-                    style: TextStyle(color: AppColors.subtle, fontSize: 12)),
-              ),
-            ),
-            if (filteredDevice.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Center(
-                  child: Text('Контакты не найдены',
+                  CircularProgressIndicator(color: AppColors.primary),
+                  SizedBox(height: 16),
+                  Text('Загружаем контакты…',
                       style: TextStyle(color: AppColors.subtle)),
-                ),
-              )
-            else
-              ...filteredDevice.map((dc) {
-                final displayName = dc.displayName;
-                final phone = dc.phones.isNotEmpty
-                    ? dc.phones.first.number
-                    : null;
-                final hasChat   = _hasChat(displayName);
-                final inApp     = _isInApp(dc);
-                return Column(
+                ],
+              ),
+            );
+          }
+
+          // Отказ в разрешении
+          if (_permissionDenied) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: inApp
-                            ? AppColors.primary.withValues(alpha: 0.2)
-                            : AppColors.primary.withValues(alpha: 0.10),
-                        child: Icon(
-                          inApp ? Icons.check : Icons.smartphone,
-                          color: AppColors.primary,
-                          size: 20,
-                        ),
-                      ),
-                      title: Text(displayName),
-                      subtitle: phone != null
-                          ? Text(phone,
-                              style: const TextStyle(
-                                  fontSize: 12, color: AppColors.subtle))
-                          : null,
-                      trailing: hasChat
-                          ? _openBadge()
-                          : inApp
-                              ? _inAppBadge()
-                              : null,
-                      onTap: () =>
-                          Navigator.of(context).pop(displayName),
+                    const Icon(Icons.contacts_outlined,
+                        size: 56, color: AppColors.subtle),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Нет доступа к контактам',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 16),
                     ),
-                    const Divider(height: 1, indent: 72),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Разрешите доступ в настройках, чтобы найти друзей по телефонной книге',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.subtle),
+                    ),
+                    const SizedBox(height: 20),
+                    FilledButton.icon(
+                      onPressed: _loadDeviceContacts,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Повторить'),
+                      style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primary),
+                    ),
                   ],
-                );
-              }),
-          ],
+                ),
+              ),
+            );
+          }
+
+          // Контакты загружены
+          if (deviceLoaded) {
+            return _buildContactList(filteredApp, filteredDevice);
+          }
+
+          // Не должно достигаться (initState запускает загрузку)
+          return const SizedBox.shrink();
+        }
+
+        // ── Десктоп/Web: только контакты приложения ────────────────────
+        return _buildAppContactsOnly(filteredApp);
+      }),
+    );
+  }
+
+  // ── Список для мобильных (телефонная книга + контакты приложения) ─────────
+
+  Widget _buildContactList(
+      List<AppContact> appContacts, List<fc.Contact> deviceContacts) {
+    return ListView(
+      children: [
+        // ── Контакты телефона ─────────────────────────────────────────
+        _SectionHeader(
+          title: _query.isEmpty
+              ? 'Контакты (${deviceContacts.length})'
+              : 'Контакты (${deviceContacts.length})',
+        ),
+        if (deviceContacts.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 20),
+            child: Center(
+              child: Text('Контакты не найдены',
+                  style: TextStyle(color: AppColors.subtle)),
+            ),
+          )
+        else
+          ...deviceContacts.map((dc) => _deviceContactTile(dc)),
+
+        // ── Контакты приложения (отдельным разделом) ──────────────────
+        if (appContacts.isNotEmpty) ...[
+          _SectionHeader(
+            title: 'В приложении (${appContacts.length})',
+          ),
+          ...appContacts.map((c) => _appContactTile(c)),
         ],
-      ),
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // ── Список только для десктопа ────────────────────────────────────────────
+
+  Widget _buildAppContactsOnly(List<AppContact> contacts) {
+    if (contacts.isEmpty) {
+      return const Center(
+        child: Text('Нет контактов',
+            style: TextStyle(color: AppColors.subtle)),
+      );
+    }
+    return ListView(
+      children: contacts.map((c) => _appContactTile(c)).toList(),
+    );
+  }
+
+  // ── Тайл контакта из телефонной книги ────────────────────────────────────
+
+  Widget _deviceContactTile(fc.Contact dc) {
+    final displayName = dc.displayName;
+    final phone   = dc.phones.isNotEmpty ? dc.phones.first.number : null;
+    final hasChat = _hasChat(displayName);
+    final inApp   = _isInApp(dc);
+
+    return Column(
+      children: [
+        ListTile(
+          leading: dc.photo != null
+              ? CircleAvatar(backgroundImage: MemoryImage(dc.photo!))
+              : CircleAvatar(
+                  backgroundColor: inApp
+                      ? AppColors.primary.withValues(alpha: 0.2)
+                      : AppColors.primary.withValues(alpha: 0.10),
+                  child: Text(
+                    displayName.isNotEmpty
+                        ? displayName[0].toUpperCase()
+                        : '?',
+                    style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ),
+          title: Text(displayName),
+          subtitle: phone != null
+              ? Text(phone,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.subtle))
+              : null,
+          trailing: hasChat
+              ? _openBadge()
+              : inApp
+                  ? _inAppBadge()
+                  : null,
+          onTap: () => Navigator.of(context).pop(displayName),
+        ),
+        const Divider(height: 1, indent: 72),
+      ],
+    );
+  }
+
+  // ── Тайл контакта приложения ──────────────────────────────────────────────
+
+  Widget _appContactTile(AppContact contact) {
+    final hasChat = _hasChat(contact.name);
+    return Column(
+      children: [
+        ListTile(
+          leading: CircleAvatar(
+            backgroundColor: AppColors.primary,
+            child: Text(
+              contact.name.isNotEmpty
+                  ? contact.name[0].toUpperCase()
+                  : '?',
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ),
+          title: Text(contact.name),
+          subtitle: contact.group != null
+              ? Text(contact.group!,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.subtle))
+              : null,
+          trailing: hasChat ? _openBadge() : null,
+          onTap: () => Navigator.of(context).pop(contact.name),
+        ),
+        const Divider(height: 1, indent: 72),
+      ],
     );
   }
 }
@@ -819,9 +825,8 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 // ── Заголовок секции ──────────────────────────────────────────────────────────
 class _SectionHeader extends StatelessWidget {
   final String title;
-  final Widget? action;
 
-  const _SectionHeader({required this.title, this.action});
+  const _SectionHeader({required this.title});
 
   @override
   Widget build(BuildContext context) {
@@ -840,7 +845,6 @@ class _SectionHeader extends StatelessWidget {
               ),
             ),
           ),
-          ?action,
         ],
       ),
     );
