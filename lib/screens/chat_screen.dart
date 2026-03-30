@@ -479,17 +479,26 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _openSettings() async {
-    final updated = await Navigator.push<Chat>(
+    // Результат: Chat — сохранить настройки, true — чат удалён, null — отмена.
+    final result = await Navigator.push<Object>(
       context,
       MaterialPageRoute(
-        builder: (_) => ChatSettingsScreen(chat: _currentChat),
+        builder: (_) => ChatSettingsScreen(
+          chat: _currentChat,
+          service: widget.service,
+        ),
       ),
     );
-    if (updated == null || !mounted) return;
-    final saved = await widget.service.updateChatSettings(updated);
     if (!mounted) return;
-    setState(() => _currentChat = saved);
-    widget.onChatUpdated(saved);
+    if (result == true) {
+      // Чат удалён — возвращаемся в список
+      Navigator.of(context).pop();
+    } else if (result is Chat) {
+      final saved = await widget.service.updateChatSettings(result);
+      if (!mounted) return;
+      setState(() => _currentChat = saved);
+      widget.onChatUpdated(saved);
+    }
   }
 
   void _scrollToBottom() {

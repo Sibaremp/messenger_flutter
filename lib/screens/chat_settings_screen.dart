@@ -3,13 +3,19 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
+import '../services/chat_service.dart';
 
 /// Позволяет редактировать имя, описание и аватар чата.
 /// Возвращает обновлённый [Chat] через [Navigator.pop] при сохранении.
 class ChatSettingsScreen extends StatefulWidget {
   final Chat chat;
+  final ChatService service;
 
-  const ChatSettingsScreen({super.key, required this.chat});
+  const ChatSettingsScreen({
+    super.key,
+    required this.chat,
+    required this.service,
+  });
 
   @override
   State<ChatSettingsScreen> createState() => _ChatSettingsScreenState();
@@ -187,6 +193,41 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
             const SizedBox(height: 8),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Диалог подтверждения удаления всего чата (группы / сообщества).
+  /// После подтверждения удаляет чат через сервис и возвращает [true] —
+  /// сигнал для [ChatScreen] закрыться и вернуться в список чатов.
+  void _confirmDelete() {
+    final label = widget.chat.type == ChatType.community
+        ? 'сообщество'
+        : 'группу';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Удалить $label?'),
+        content: Text(
+          '«${widget.chat.name}» будет удалено навсегда вместе со всей перепиской.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await widget.service.deleteChat(widget.chat.id);
+              if (!mounted) return;
+              // true — сигнал ChatScreen: вернуться в список чатов
+              Navigator.pop(context, true);
+            },
+            child: const Text('Удалить',
+                style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
   }
@@ -426,6 +467,30 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ],
               ),
             ),
+            // ── Удалить группу / сообщество (только для не-личных чатов) ─────
+            if (widget.chat.type != ChatType.direct) ...[
+              const SizedBox(height: 32),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _confirmDelete,
+                  icon: const Icon(Icons.delete_forever_outlined,
+                      color: Colors.red),
+                  label: Text(
+                    widget.chat.type == ChatType.community
+                        ? 'Удалить сообщество'
+                        : 'Удалить группу',
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.red),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            ],
             if (_members.isNotEmpty) ...[
               const SizedBox(height: 24),
               Align(

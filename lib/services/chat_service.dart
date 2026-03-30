@@ -29,6 +29,11 @@ class ChatUpdated extends ChatEvent {
   ChatUpdated(this.chat);
 }
 
+class ChatDeleted extends ChatEvent {
+  final String chatId;
+  ChatDeleted(this.chatId);
+}
+
 // ── Абстрактный интерфейс ─────────────────────────────────────────────────────
 
 /// Контракт для всех бэкендов чата (локальный, удалённый, mock).
@@ -69,6 +74,9 @@ abstract class ChatService {
   });
 
   Future<Chat> updateChatSettings(Chat chat);
+
+  /// Удаляет чат полностью. Эмитит [ChatDeleted] для подписчиков.
+  Future<void> deleteChat(String chatId);
 
   Stream<ChatEvent> get events;
 
@@ -222,6 +230,14 @@ class LocalChatService implements ChatService {
     _chats[i] = chat;
     _controller.add(ChatUpdated(chat));
     return chat;
+  }
+
+  @override
+  Future<void> deleteChat(String chatId) async {
+    final i = _idx(chatId);
+    if (i == -1) return;
+    _chats.removeAt(i);
+    _controller.add(ChatDeleted(chatId));
   }
 
   @override
