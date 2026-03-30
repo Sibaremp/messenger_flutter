@@ -506,6 +506,26 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             )
           : AppBar(
+              // Аватар чата слева от заголовка
+              leadingWidth: 72,
+              leading: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 0, 4),
+                child: Row(
+                  children: [
+                    // Кнопка «назад»
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                    ChatAvatar(
+                      type: chat.type,
+                      avatarPath: chat.avatarPath,
+                      radius: AppSizes.avatarRadiusSmall,
+                    ),
+                  ],
+                ),
+              ),
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -542,6 +562,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   message: msg,
                   showSenderName: chat.type != ChatType.direct,
                   myAvatarPath: _myAvatarPath,
+                  // Аватар и его показ — только для личных чатов
+                  showInterlocutorAvatar: chat.type == ChatType.direct,
                   interlocutorAvatarPath: chat.type == ChatType.direct
                       ? chat.avatarPath
                       : null,

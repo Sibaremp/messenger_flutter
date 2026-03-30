@@ -8,25 +8,38 @@ import '../profile_screen.dart' show ProfileAvatar;
 
 // ─── Аватар ───────────────────────────────────────────────────────────────────
 
-/// Круглый аватар, отображающий соответствующую типу иконку для чата.
+/// Круглый аватар чата.
+/// Если [avatarPath] задан и файл существует — показывает изображение,
+/// иначе — иконку-заглушку по типу чата.
 class ChatAvatar extends StatelessWidget {
   final ChatType type;
   final double radius;
+  final String? avatarPath;
 
   const ChatAvatar({
     super.key,
     this.type = ChatType.direct,
     this.radius = AppSizes.avatarRadiusLarge,
+    this.avatarPath,
   });
 
   IconData get _icon => switch (type) {
-    ChatType.direct => Icons.person,
-    ChatType.group => Icons.group,
+    ChatType.direct    => Icons.person,
+    ChatType.group     => Icons.group,
     ChatType.community => Icons.campaign,
   };
 
   @override
   Widget build(BuildContext context) {
+    if (avatarPath != null) {
+      final file = File(avatarPath!);
+      if (file.existsSync()) {
+        return CircleAvatar(
+          radius: radius,
+          backgroundImage: FileImage(file),
+        );
+      }
+    }
     return CircleAvatar(
       radius: radius,
       backgroundColor: AppColors.primary,
@@ -62,8 +75,12 @@ class MessageBubble extends StatelessWidget {
   final Message message;
   final bool showSenderName;
   final String? myAvatarPath;
-  /// Аватар собеседника (для личных чатов — левая сторона)
+  /// Путь к аватару собеседника (только для личных чатов).
   final String? interlocutorAvatarPath;
+  /// Показывать ли аватар слева от чужих сообщений.
+  /// true — личный чат (аватар всегда рисуется, даже если нет фото).
+  /// false — группа/сообщество (аватар не рисуется).
+  final bool showInterlocutorAvatar;
   final bool isSelected;
   final bool isSelectionMode;
   final VoidCallback onLongPress;
@@ -75,6 +92,7 @@ class MessageBubble extends StatelessWidget {
     this.showSenderName = false,
     this.myAvatarPath,
     this.interlocutorAvatarPath,
+    this.showInterlocutorAvatar = false,
     this.isSelected = false,
     this.isSelectionMode = false,
     required this.onLongPress,
@@ -222,13 +240,17 @@ class MessageBubble extends StatelessWidget {
                     isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  if (!isMe) ...[
+                  // Аватар собеседника: только в личном чате
+                  if (!isMe && showInterlocutorAvatar) ...[
                     ProfileAvatar(
                       avatarPath: interlocutorAvatarPath,
                       radius: AppSizes.avatarRadiusSmall,
                     ),
                     const SizedBox(width: 6),
                   ],
+                  // В групповых чатах отступ, чтобы пузырь не прижимался к краю
+                  if (!isMe && !showInterlocutorAvatar)
+                    const SizedBox(width: 4),
                   bubble,
                   if (isMe) ...[
                     const SizedBox(width: 6),

@@ -275,7 +275,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       horizontal: 12, vertical: 10),
                   child: Row(
                     children: [
-                      ChatAvatar(type: chat.type),
+                      ChatAvatar(type: chat.type, avatarPath: chat.avatarPath),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
