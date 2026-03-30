@@ -5,10 +5,13 @@ import 'services/chat_service.dart';
 import 'screens/chat_list_screen.dart';
 import 'auth_screen.dart';
 
+/// Entry point: wraps the app with [ThemeProvider] so theme state is available
+/// before the first frame, then mounts [MyApp] with a [LocalChatService].
 void main() {
   runApp(ThemeProvider(child: MyApp(service: LocalChatService())));
 }
 
+/// Root widget: configures [MaterialApp] with theme, localization, and auth gate.
 class MyApp extends StatelessWidget {
   final ChatService service;
   const MyApp({super.key, required this.service});

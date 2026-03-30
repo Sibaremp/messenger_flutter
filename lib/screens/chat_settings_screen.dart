@@ -4,6 +4,8 @@ import 'package:image_picker/image_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
 
+/// Allows editing a chat's name, description, and avatar.
+/// Returns the updated [Chat] via [Navigator.pop] on save.
 class ChatSettingsScreen extends StatefulWidget {
   final Chat chat;
 
@@ -34,6 +36,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     super.dispose();
   }
 
+  /// Picks and resizes an avatar image from the given [source].
+  /// Images are capped at 512×512 px to keep storage small.
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(
@@ -125,6 +129,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
     final updated = widget.chat.copyWith(
       name: name,
+      // Store null rather than an empty string for missing descriptions.
       description: _descController.text.trim().isEmpty
           ? null
           : _descController.text.trim(),
@@ -355,6 +360,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   }
 }
 
+/// Small coloured label showing a member's role (creator, admin).
 class _RoleBadge extends StatelessWidget {
   final String label;
   final Color color;

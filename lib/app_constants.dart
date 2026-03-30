@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+/// App-wide color palette. Private constructor prevents instantiation.
 class AppColors {
   const AppColors._();
   static const primary    = Color(0xFFFF6F00);
@@ -11,21 +12,27 @@ class AppColors {
   static const subtle     = Color(0xFF757575);
 }
 
+/// Shared layout constants. Private constructor prevents instantiation.
 class AppSizes {
   const AppSizes._();
   static const avatarRadiusSmall      = 16.0;
   static const avatarRadiusLarge      = 24.0;
+  /// Message bubbles are capped at 70 % of screen width.
   static const bubbleMaxWidthFactor   = 0.7;
 }
 
+/// File extensions treated as video when picking documents.
 const kVideoExtensions = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', '3gp'};
 
+/// Formats [time] as HH:mm (used inside message bubbles).
 String formatTime(DateTime time) {
   final h = time.hour.toString().padLeft(2, '0');
   final m = time.minute.toString().padLeft(2, '0');
   return '$h:$m';
 }
 
+/// Smart timestamp for the chat list: today → HH:mm, yesterday → "Вчера",
+/// within 7 days → short weekday, older → "d MMM".
 String formatChatTime(DateTime time) {
   final now   = DateTime.now();
   final today = DateTime(now.year, now.month, now.day);

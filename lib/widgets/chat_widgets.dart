@@ -8,6 +8,7 @@ import '../profile_screen.dart' show ProfileAvatar;
 
 // ─── Аватар ───────────────────────────────────────────────────────────────────
 
+/// Circular avatar that shows a type-appropriate icon for a chat.
 class ChatAvatar extends StatelessWidget {
   final ChatType type;
   final double radius;
@@ -55,6 +56,8 @@ class _StatusIcon extends StatelessWidget {
 
 // ─── Пузырь сообщения ─────────────────────────────────────────────────────────
 
+/// Renders a single message as a styled bubble with optional avatar,
+/// selection highlight, and attachment preview.
 class MessageBubble extends StatelessWidget {
   final Message message;
   final bool showSenderName;
@@ -172,6 +175,7 @@ class MessageBubble extends StatelessWidget {
       ),
     );
 
+    // In selection mode taps toggle selection; outside it, long-press opens the action menu.
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: isSelectionMode ? onTap : null,
@@ -437,6 +441,8 @@ class _DocumentPreview extends StatelessWidget {
 
 // ─── Поле ввода сообщения ─────────────────────────────────────────────────────
 
+/// Text input bar at the bottom of a chat screen.
+/// Switches between compose mode and edit mode based on [isEditing].
 class MessageInput extends StatelessWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
@@ -594,6 +600,7 @@ class MediaViewerScreen extends StatefulWidget {
 
   const MediaViewerScreen({super.key, required this.attachment});
 
+  /// Opens [attachment] in a full-screen viewer with a fade transition.
   static void open(BuildContext context, Attachment attachment) {
     Navigator.push(
       context,
@@ -680,6 +687,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
     super.dispose();
   }
 
+  /// Formats a [Duration] as mm:ss for the video progress indicator.
   String _fmt(Duration d) {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');

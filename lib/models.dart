@@ -1,7 +1,9 @@
 // ─── Models ───────────────────────────────────────────────────────────────────
 
+/// Discriminates between personal, group, and broadcast (community) chats.
 enum ChatType { direct, group, community }
 
+/// File attachment categories used for rendering and MIME handling.
 enum AttachmentType { image, video, document }
 
 /// Статус доставки сообщения (отображается только у своих сообщений)
@@ -12,6 +14,7 @@ enum MessageStatus {
   error,     // ✗  ошибка
 }
 
+/// A file attached to a [Message] (image, video, or document).
 class Attachment {
   final String path;
   final AttachmentType type;
@@ -25,6 +28,7 @@ class Attachment {
     this.fileSize,
   });
 
+  /// Human-readable file size: bytes → КБ → МБ.
   String get readableSize {
     if (fileSize == null) return '';
     if (fileSize! < 1024) return '$fileSize Б';
@@ -33,6 +37,7 @@ class Attachment {
   }
 }
 
+/// A contact visible in the contact-picker (app-side registry, not device book).
 class AppContact {
   final String name;
   final String? group;
@@ -41,7 +46,9 @@ class AppContact {
   const AppContact({required this.name, this.group, this.phone});
 }
 
+/// An individual chat message with optional attachment and delivery status.
 class Message {
+  // Auto-incremented fallback used when no explicit id is provided.
   static int _nextId = 0;
 
   final String id;
@@ -76,8 +83,10 @@ class Message {
   );
 }
 
+/// Privilege level of a participant inside a group or community chat.
 enum MemberRole { creator, admin, member }
 
+/// A participant in a [Chat] with an associated [MemberRole].
 class ChatMember {
   final String name;
   final MemberRole role;
@@ -90,7 +99,9 @@ class ChatMember {
   );
 }
 
+/// Core chat entity containing messages, members, and metadata.
 class Chat {
+  // Auto-incremented fallback used when no explicit id is provided.
   static int _nextId = 0;
 
   final String id;
@@ -135,6 +146,7 @@ class Chat {
   DateTime get lastTime =>
       messages.isNotEmpty ? messages.last.time : DateTime(0);
 
+  /// Community chats are read-only unless the current user is the admin.
   bool get canWrite =>
       type != ChatType.community || adminName == 'Я';
 

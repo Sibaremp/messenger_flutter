@@ -9,6 +9,7 @@ import '../widgets/chat_widgets.dart';
 import '../profile_screen.dart' show ProfileStorage;
 import 'chat_settings_screen.dart';
 
+/// Full-screen view for a single chat: message list, input bar, and media picker.
 class ChatScreen extends StatefulWidget {
   final Chat chat;
   final ChatService service;
@@ -47,6 +48,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _currentChat = widget.chat;
     _messages = List.from(widget.chat.messages);
     _loadAvatar();
+    // Scroll to the latest message once the first frame is rendered.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (_scrollController.hasClients) {
@@ -100,6 +102,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _controller.text.trim();
     if (text.isEmpty || _editingMessage == null) return;
     final editedId = _editingMessage!.id;
+    // Clear editing state before the async call to prevent double-submit.
     setState(() => _editingMessage = null);
     _controller.clear();
 
@@ -354,6 +357,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (result == null || result.files.isEmpty || !mounted) return;
     final file = result.files.first;
     if (file.path == null) return;
+    // Reclassify video files picked through the generic document picker.
     final ext = file.name.split('.').last.toLowerCase();
     final attachType = kVideoExtensions.contains(ext)
         ? AttachmentType.video

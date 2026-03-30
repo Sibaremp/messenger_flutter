@@ -10,6 +10,7 @@ import '../profile_screen.dart' show ProfileStorage, ProfileAvatar, ProfileScree
 import '../widgets/chat_widgets.dart';
 import 'chat_screen.dart';
 
+/// Home screen showing all chats sorted by most-recent message.
 class ChatListScreen extends StatefulWidget {
   final ChatService service;
   const ChatListScreen({super.key, required this.service});
@@ -39,6 +40,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _eventSub = widget.service.events.listen(_handleEvent);
   }
 
+  /// Refreshes the list on any service event (message, edit, delete, etc.).
   void _handleEvent(ChatEvent event) {
     if (!mounted) return;
     _loadChats();
@@ -60,6 +62,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     super.dispose();
   }
 
+  /// Returns a copy of [_chats] sorted newest-first by last message time.
   List<Chat> get _sortedChats =>
       [..._chats]..sort((a, b) => b.lastTime.compareTo(a.lastTime));
 
@@ -501,7 +504,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
   bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 
-  // Проверяем, зарегистрирован ли контакт устройства в приложении
+  /// Returns true if any of the contact's phone numbers matches a registered user.
   bool _isInApp(fc.Contact contact) {
     for (final p in contact.phones) {
       final normalized = AuthService.normalizePhone(p.number);
