@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'theme.dart' show ThemeProvider, AppThemeMode;
 import 'app_constants.dart' show AppColors;
 import 'package:image_picker/image_picker.dart';
-import 'auth_screen.dart' show AuthService, AuthScreen, kCollegeGroups;
+import 'auth_screen.dart' show AuthService, kCollegeGroups;
 import 'services/sim_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,10 +152,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _logout() async {
     await AuthService.logout();
     if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const AuthScreen()),
-          (_) => false,
-    );
+    // Возвращаем true — ChatListScreen сам выполнит навигацию к AuthScreen
+    // с правильным onLoginSuccess. Прямой push AuthScreen() здесь приведёт
+    // к отсутствию колбэка и зависшему спиннеру после входа.
+    Navigator.of(context).pop(true);
   }
 
   @override

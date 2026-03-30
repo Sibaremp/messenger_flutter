@@ -5,7 +5,7 @@ import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
-import '../auth_screen.dart' show AuthService;
+import '../auth_screen.dart' show AuthService, AuthScreen;
 import '../profile_screen.dart' show ProfileStorage, ProfileAvatar, ProfileScreen;
 import '../widgets/chat_widgets.dart';
 import 'chat_screen.dart';
@@ -195,11 +195,34 @@ class _ChatListScreenState extends State<ChatListScreen> {
   }
 
   Future<void> _openProfile() async {
-    await Navigator.push(
+    final loggedOut = await Navigator.push<bool>(
       context,
       MaterialPageRoute(builder: (_) => const ProfileScreen()),
     );
-    _loadAvatar();
+
+    if (!mounted) return;
+
+    if (loggedOut == true) {
+      // Пользователь вышел из аккаунта — открываем AuthScreen с колбэком,
+      // который вернёт его обратно на этот экран после повторного входа.
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (ctx) => AuthScreen(
+            onLoginSuccess: () {
+              Navigator.of(ctx).pushAndRemoveUntil(
+                MaterialPageRoute(
+                  builder: (_) => ChatListScreen(service: widget.service),
+                ),
+                (_) => false,
+              );
+            },
+          ),
+        ),
+        (_) => false,
+      );
+    } else {
+      _loadAvatar();
+    }
   }
 
   @override
