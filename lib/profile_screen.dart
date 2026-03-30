@@ -4,6 +4,7 @@ import 'theme.dart' show ThemeProvider, AppThemeMode;
 import 'app_constants.dart' show AppColors;
 import 'package:image_picker/image_picker.dart';
 import 'auth_screen.dart' show AuthService, AuthScreen, kCollegeGroups;
+import 'services/sim_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pubspec.yaml — добавь:
@@ -290,6 +291,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   String? _avatarPath;
   String? _selectedGroup;
   bool _isSaving = false;
+  bool _simLoading = false;
 
   @override
   void initState() {
@@ -383,6 +385,86 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         ),
       ),
     );
+  }
+
+  // ── Получить номер из SIM ────────────────────────────────────────────────
+  Future<void> _fillFromSim() async {
+    setState(() => _simLoading = true);
+    final result = await SimService.fetchSimCards();
+    if (!mounted) return;
+    setState(() => _simLoading = false);
+
+    switch (result.status) {
+      case SimResult.unsupported:
+        _snack('Определение номера SIM недоступно на этой платформе');
+      case SimResult.permissionDenied:
+        _snack('Нет доступа к данным телефона');
+      case SimResult.permissionPermanentlyDenied:
+        _snack(
+          'Разрешение отклонено. Откройте настройки.',
+          action: SnackBarAction(label: 'Настройки', onPressed: SimService.openSettings),
+        );
+      case SimResult.noSimFound:
+        _snack('SIM-карта не обнаружена');
+      case SimResult.error:
+        _snack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
+      case SimResult.success:
+        final sims = result.simCards;
+        if (sims.length == 1) {
+          _applySimCard(sims.first);
+        } else {
+          _showSimPicker(sims);
+        }
+    }
+  }
+
+  void _applySimCard(SimCard sim) {
+    if (sim.phoneNumber?.isNotEmpty == true) {
+      _phoneController.text = sim.phoneNumber!;
+      _snack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
+    } else {
+      _snack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
+    }
+  }
+
+  void _showSimPicker(List<SimCard> sims) {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            const Text('Выберите SIM-карту',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 8),
+            ...sims.map((sim) => ListTile(
+              leading: const Icon(Icons.sim_card_outlined, color: AppColors.primary),
+              title: Text(sim.slotLabel),
+              subtitle: Text(sim.displayInfo),
+              trailing: sim.phoneNumber != null
+                  ? Text(sim.phoneNumber!, style: const TextStyle(fontSize: 13))
+                  : const Text('номер неизвестен',
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+              onTap: () { Navigator.pop(context); _applySimCard(sim); },
+            )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _snack(String text, {SnackBarAction? action}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(text),
+      behavior: SnackBarBehavior.floating,
+      action: action,
+    ));
   }
 
   Future<void> _save() async {
@@ -514,6 +596,23 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               icon: Icons.phone_outlined,
               hint: '+7 (999) 000-00-00',
               keyboardType: TextInputType.phone,
+              suffixWidget: SimService.isSupported
+                  ? _simLoading
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.sim_card_outlined,
+                              color: AppColors.primary),
+                          tooltip: 'Заполнить с SIM',
+                          onPressed: _fillFromSim,
+                        )
+                  : null,
             ),
             const SizedBox(height: 8),
             // Логин — только для чтения
@@ -643,6 +742,7 @@ class _EditField extends StatelessWidget {
   final int? maxLength;
   final String? hint;
   final TextInputType? keyboardType;
+  final Widget? suffixWidget;
 
   const _EditField({
     required this.controller,
@@ -652,6 +752,7 @@ class _EditField extends StatelessWidget {
     this.maxLength,
     this.hint,
     this.keyboardType,
+    this.suffixWidget,
   });
 
   @override
@@ -665,6 +766,7 @@ class _EditField extends StatelessWidget {
         labelText: label,
         hintText: hint,
         prefixIcon: Icon(icon, color: AppColors.primary),
+        suffixIcon: suffixWidget,
         filled: true,
         fillColor: Theme.of(context).cardColor,
         border: OutlineInputBorder(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'services/sim_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pubspec.yaml:
@@ -465,6 +466,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
+  bool _simLoading = false;
 
   @override
   void dispose() {
@@ -474,6 +476,97 @@ class _RegisterFormState extends State<_RegisterForm> {
     _confirmController.dispose();
     _phoneController.dispose();
     super.dispose();
+  }
+
+  // ── Чтение номера из SIM ─────────────────────────────────────────────────
+  Future<void> _fillFromSim() async {
+    setState(() => _simLoading = true);
+    final result = await SimService.fetchSimCards();
+    if (!mounted) return;
+    setState(() => _simLoading = false);
+
+    switch (result.status) {
+      case SimResult.unsupported:
+        _showSimSnack('Определение номера SIM недоступно на этой платформе');
+      case SimResult.permissionDenied:
+        _showSimSnack('Нет доступа к данным телефона');
+      case SimResult.permissionPermanentlyDenied:
+        _showSimSnack(
+          'Разрешение отклонено. Откройте настройки приложения.',
+          action: SnackBarAction(
+            label: 'Настройки',
+            onPressed: SimService.openSettings,
+          ),
+        );
+      case SimResult.noSimFound:
+        _showSimSnack('SIM-карта не обнаружена или не вставлена');
+      case SimResult.error:
+        _showSimSnack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
+      case SimResult.success:
+        final sims = result.simCards;
+        if (sims.length == 1) {
+          _applySimCard(sims.first);
+        } else {
+          // Два слота — показываем выбор
+          _showSimPickerDialog(sims);
+        }
+    }
+  }
+
+  void _applySimCard(SimCard sim) {
+    if (sim.phoneNumber?.isNotEmpty == true) {
+      _phoneController.text = sim.phoneNumber!;
+      _showSimSnack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
+    } else {
+      _showSimSnack(
+        'Оператор: ${sim.displayInfo}. Введите номер вручную.',
+      );
+    }
+  }
+
+  void _showSimPickerDialog(List<SimCard> sims) {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            const Text(
+              'Выберите SIM-карту',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            ...sims.map((sim) => ListTile(
+              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFFF6F00)),
+              title: Text(sim.slotLabel),
+              subtitle: Text(sim.displayInfo),
+              trailing: sim.phoneNumber != null
+                  ? Text(sim.phoneNumber!, style: const TextStyle(fontSize: 13))
+                  : const Text('номер неизвестен',
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+              onTap: () {
+                Navigator.pop(context);
+                _applySimCard(sim);
+              },
+            )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSimSnack(String text, {SnackBarAction? action}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(text),
+      behavior: SnackBarBehavior.floating,
+      action: action,
+    ));
   }
 
   Future<void> _submit() async {
@@ -525,7 +618,11 @@ class _RegisterFormState extends State<_RegisterForm> {
             onChanged: (g) => setState(() => _selectedGroup = g),
           ),
           const SizedBox(height: 12),
-          _PhoneField(controller: _phoneController),
+          _PhoneField(
+            controller: _phoneController,
+            onSimTap: _fillFromSim,
+            simLoading: _simLoading,
+          ),
           const SizedBox(height: 12),
           _LoginToggle(
             usePhone: _usePhone,
@@ -669,11 +766,42 @@ class _ToggleChip extends StatelessWidget {
 
 class _PhoneField extends StatelessWidget {
   final TextEditingController controller;
+  /// Если передан — показываем кнопку «Получить из SIM»
+  final VoidCallback? onSimTap;
+  final bool simLoading;
 
-  const _PhoneField({required this.controller});
+  const _PhoneField({
+    required this.controller,
+    this.onSimTap,
+    this.simLoading = false,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final base = _inputDecoration(
+      'Номер телефона', Icons.phone_outlined,
+      Theme.of(context).cardColor,
+      hintText: '+7 (999) 000-00-00',
+    );
+
+    final decoration = (onSimTap != null && SimService.isSupported)
+        ? base.copyWith(
+            suffixIcon: simLoading
+                ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(
+                      width: 18, height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                : IconButton(
+                    icon: const Icon(Icons.sim_card_outlined),
+                    tooltip: 'Заполнить из SIM-карты',
+                    onPressed: onSimTap,
+                  ),
+          )
+        : base;
+
     return TextFormField(
       controller: controller,
       keyboardType: TextInputType.phone,
@@ -687,11 +815,7 @@ class _PhoneField extends StatelessWidget {
         if (digits.length < 10) return 'Некорректный номер';
         return null;
       },
-      decoration: _inputDecoration(
-        'Номер телефона', Icons.phone_outlined,
-        Theme.of(context).cardColor,
-        hintText: '+7 (999) 000-00-00',
-      ),
+      decoration: decoration,
     );
   }
 }
