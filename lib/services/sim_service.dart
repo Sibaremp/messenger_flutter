@@ -53,16 +53,21 @@ class SimServiceResult {
 class SimService {
   static const _channel = MethodChannel('caspian_college_messenger/sim_info');
 
-  /// Чтение номера SIM доступно только на Android.
-  static bool get isSupported => !kIsWeb && Platform.isAndroid;
+  /// SIM-функция доступна на Android и iOS (не Web, не Desktop).
+  static bool get isSupported =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  /// На Android SIM возвращает реальный номер телефона.
+  /// На iOS — только данные оператора (Apple не предоставляет номер).
+  static bool get canReadNumber => !kIsWeb && Platform.isAndroid;
 
   /// Запрашивает разрешения и возвращает список доступных SIM-карт.
   ///
   /// Возможные статусы результата:
-  /// - [SimResult.success]                  — список получен (номера могут быть null)
+  /// - [SimResult.success]                  — список получен (номера могут быть null на iOS)
   /// - [SimResult.permissionDenied]         — пользователь отклонил запрос
   /// - [SimResult.permissionPermanentlyDenied] — нужно открыть настройки
-  /// - [SimResult.unsupported]              — платформа не Android
+  /// - [SimResult.unsupported]              — платформа не поддерживается
   /// - [SimResult.noSimFound]               — SIM не вставлена / не определена
   /// - [SimResult.error]                    — нативная ошибка
   static Future<SimServiceResult> fetchSimCards() async {
@@ -70,19 +75,16 @@ class SimService {
       return const SimServiceResult(status: SimResult.unsupported);
     }
 
-    // ── Запрос прав ─────────────────────────────────────────────────────────
-    final phoneState = await Permission.phone.request();
-
-    if (phoneState.isPermanentlyDenied) {
-      return const SimServiceResult(status: SimResult.permissionPermanentlyDenied);
+    // ── Запрос прав (только Android — iOS не требует разрешения для carrier info) ─
+    if (Platform.isAndroid) {
+      final phoneState = await Permission.phone.request();
+      if (phoneState.isPermanentlyDenied) {
+        return const SimServiceResult(status: SimResult.permissionPermanentlyDenied);
+      }
+      if (!phoneState.isGranted) {
+        return const SimServiceResult(status: SimResult.permissionDenied);
+      }
     }
-    if (!phoneState.isGranted) {
-      return const SimServiceResult(status: SimResult.permissionDenied);
-    }
-
-    // READ_PHONE_NUMBERS нужен для номера на Android 8+; запрашиваем отдельно,
-    // но не критично — carrier info вернётся и без него.
-    await Permission.contacts.request(); // уже должны быть выданы
 
     // ── Вызов нативного кода ─────────────────────────────────────────────────
     try {

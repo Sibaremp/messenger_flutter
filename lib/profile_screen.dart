@@ -423,6 +423,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _phoneController.text = sim.phoneNumber!;
       _snack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
     } else {
+      // iOS: Apple не предоставляет номер через публичный API
       _snack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
     }
   }
@@ -588,16 +589,20 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               value: _selectedGroup,
               onChanged: (g) => setState(() => _selectedGroup = g),
             ),
-            // ── Телефон для поиска — только на Android через SIM ─────
+            // ── Телефон для поиска — Android (авто) и iOS (вручную) ──
             if (SimService.isSupported) ...[
               const SizedBox(height: 16),
               _EditField(
                 controller: _phoneController,
                 label: 'Телефон для поиска',
                 icon: Icons.phone_outlined,
-                hint: 'Нажмите SIM для заполнения',
+                // Android: заполняется из SIM автоматически (read-only)
+                // iOS: Apple не даёт номер — вводится вручную
+                hint: SimService.canReadNumber
+                    ? 'Нажмите SIM для заполнения'
+                    : '+7 (999) 000-00-00',
                 keyboardType: TextInputType.phone,
-                readOnly: true,
+                readOnly: SimService.canReadNumber,
                 suffixWidget: _simLoading
                     ? const Padding(
                         padding: EdgeInsets.all(12),
@@ -610,7 +615,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     : IconButton(
                         icon: const Icon(Icons.sim_card_outlined,
                             color: AppColors.primary),
-                        tooltip: 'Заполнить с SIM',
+                        tooltip: SimService.canReadNumber
+                            ? 'Заполнить с SIM'
+                            : 'Показать оператора',
                         onPressed: _fillFromSim,
                       ),
               ),

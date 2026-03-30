@@ -595,9 +595,8 @@ class _RegisterFormState extends State<_RegisterForm> {
       _phoneController.text = sim.phoneNumber!;
       _showSimSnack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
     } else {
-      _showSimSnack(
-        'Оператор: ${sim.displayInfo}. Введите номер вручную.',
-      );
+      // iOS: номер недоступен через публичный API — подсказываем оператора
+      _showSimSnack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
     }
   }
 
@@ -864,10 +863,15 @@ class _PhoneField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // На iOS номер вводится вручную (Apple не даёт читать его из SIM)
+    final hint = SimService.canReadNumber
+        ? 'Нажмите SIM для заполнения'
+        : '+7 (999) 000-00-00';
+
     final base = _inputDecoration(
       'Номер телефона', Icons.phone_outlined,
       Theme.of(context).cardColor,
-      hintText: '+7 (999) 000-00-00',
+      hintText: hint,
     );
 
     final decoration = (onSimTap != null && SimService.isSupported)
@@ -882,22 +886,28 @@ class _PhoneField extends StatelessWidget {
                   )
                 : IconButton(
                     icon: const Icon(Icons.sim_card_outlined),
-                    tooltip: 'Заполнить из SIM-карты',
+                    tooltip: SimService.canReadNumber
+                        ? 'Заполнить из SIM-карты'
+                        : 'Показать оператора',
                     onPressed: onSimTap,
                   ),
           )
         : base;
 
+    // Android: поле read-only, номер берётся из SIM автоматически.
+    // iOS: поле редактируемое — Apple не даёт номер, вводится вручную.
+    final isReadOnly = SimService.canReadNumber;
+
     return TextFormField(
       controller: controller,
       keyboardType: TextInputType.phone,
-      readOnly: true,  // только через SIM-карту
+      readOnly: isReadOnly,
       inputFormatters: [
         FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-\s()]')),
         LengthLimitingTextInputFormatter(16),
       ],
       validator: (v) {
-        // Номер необязателен — заполняется автоматически из SIM
+        // Номер необязателен
         if (v == null || v.trim().isEmpty) return null;
         final digits = v.replaceAll(RegExp(r'\D'), '');
         if (digits.length < 10) return 'Некорректный номер';
