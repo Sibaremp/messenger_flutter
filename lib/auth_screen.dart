@@ -339,12 +339,82 @@ class _LoginFormState extends State<_LoginForm> {
   bool _usePhone = false;
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _simLoading = false;
 
   @override
   void dispose() {
     _loginController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _fillFromSim() async {
+    setState(() => _simLoading = true);
+    final result = await SimService.fetchSimCards();
+    if (!mounted) return;
+    setState(() => _simLoading = false);
+
+    switch (result.status) {
+      case SimResult.unsupported:
+        _snack('Определение номера SIM недоступно');
+      case SimResult.permissionDenied:
+        _snack('Нет доступа к данным телефона');
+      case SimResult.permissionPermanentlyDenied:
+        _snack('Разрешение отклонено. Откройте настройки.',
+            action: SnackBarAction(label: 'Настройки', onPressed: SimService.openSettings));
+      case SimResult.noSimFound:
+        _snack('SIM-карта не обнаружена');
+      case SimResult.error:
+        _snack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
+      case SimResult.success:
+        final sims = result.simCards;
+        if (sims.isEmpty) { _snack('SIM-карта не обнаружена'); return; }
+        final sim = sims.length == 1
+            ? sims.first
+            : await _pickSim(sims);
+        if (sim != null && sim.phoneNumber?.isNotEmpty == true) {
+          _loginController.text = sim.phoneNumber!;
+        }
+    }
+  }
+
+  Future<SimCard?> _pickSim(List<SimCard> sims) async {
+    return showModalBottomSheet<SimCard>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            const Text('Выберите SIM-карту',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 8),
+            ...sims.map((sim) => ListTile(
+              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFFF6F00)),
+              title: Text(sim.slotLabel),
+              subtitle: Text(sim.displayInfo),
+              trailing: sim.phoneNumber != null
+                  ? Text(sim.phoneNumber!, style: const TextStyle(fontSize: 13))
+                  : const Text('номер неизвестен',
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+              onTap: () => Navigator.pop(context, sim),
+            )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _snack(String text, {SnackBarAction? action}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(text),
+      behavior: SnackBarBehavior.floating,
+      action: action,
+    ));
   }
 
   Future<void> _submit() async {
@@ -389,16 +459,23 @@ class _LoginFormState extends State<_LoginForm> {
       key: _formKey,
       child: Column(
         children: [
-          _LoginToggle(
-            usePhone: _usePhone,
-            onChanged: (val) => setState(() {
-              _usePhone = val;
-              _loginController.clear();
-            }),
-          ),
-          const SizedBox(height: 16),
-          if (_usePhone)
-            _PhoneField(controller: _loginController)
+          // Переключатель Email/Телефон — только на Android
+          if (SimService.isSupported) ...[
+            _LoginToggle(
+              usePhone: _usePhone,
+              onChanged: (val) => setState(() {
+                _usePhone = val;
+                _loginController.clear();
+              }),
+            ),
+            const SizedBox(height: 16),
+          ],
+          if (_usePhone && SimService.isSupported)
+            _PhoneField(
+              controller: _loginController,
+              onSimTap: _fillFromSim,
+              simLoading: _simLoading,
+            )
           else
             _AuthField(
               controller: _loginController,
@@ -617,23 +694,32 @@ class _RegisterFormState extends State<_RegisterForm> {
             showError: _groupTouched && _selectedGroup == null,
             onChanged: (g) => setState(() => _selectedGroup = g),
           ),
+          // Поле телефона — только на Android (через SIM-карту)
+          if (SimService.isSupported) ...[
+            const SizedBox(height: 12),
+            _PhoneField(
+              controller: _phoneController,
+              onSimTap: _fillFromSim,
+              simLoading: _simLoading,
+            ),
+          ],
           const SizedBox(height: 12),
-          _PhoneField(
-            controller: _phoneController,
-            onSimTap: _fillFromSim,
-            simLoading: _simLoading,
-          ),
+          // Вход по логину: Email или Телефон (телефон — только на Android)
+          if (SimService.isSupported)
+            _LoginToggle(
+              usePhone: _usePhone,
+              onChanged: (val) => setState(() {
+                _usePhone = val;
+                _loginController.clear();
+              }),
+            ),
           const SizedBox(height: 12),
-          _LoginToggle(
-            usePhone: _usePhone,
-            onChanged: (val) => setState(() {
-              _usePhone = val;
-              _loginController.clear();
-            }),
-          ),
-          const SizedBox(height: 12),
-          if (_usePhone)
-            _PhoneField(controller: _loginController)
+          if (_usePhone && SimService.isSupported)
+            _PhoneField(
+              controller: _loginController,
+              onSimTap: _fillFromSim,
+              simLoading: _simLoading,
+            )
           else
             _AuthField(
               controller: _loginController,
@@ -805,12 +891,14 @@ class _PhoneField extends StatelessWidget {
     return TextFormField(
       controller: controller,
       keyboardType: TextInputType.phone,
+      readOnly: true,  // только через SIM-карту
       inputFormatters: [
         FilteringTextInputFormatter.allow(RegExp(r'[0-9+\-\s()]')),
         LengthLimitingTextInputFormatter(16),
       ],
       validator: (v) {
-        if (v == null || v.trim().isEmpty) return 'Введите номер телефона';
+        // Номер необязателен — заполняется автоматически из SIM
+        if (v == null || v.trim().isEmpty) return null;
         final digits = v.replaceAll(RegExp(r'\D'), '');
         if (digits.length < 10) return 'Некорректный номер';
         return null;

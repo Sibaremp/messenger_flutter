@@ -538,6 +538,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   message: msg,
                   showSenderName: chat.type != ChatType.direct,
                   myAvatarPath: _myAvatarPath,
+                  interlocutorAvatarPath: chat.type == ChatType.direct
+                      ? chat.avatarPath
+                      : null,
                   isSelected: _selectedIds.contains(msg.id),
                   isSelectionMode: _isSelectionMode,
                   onLongPress: () => _showMessageActions(msg),

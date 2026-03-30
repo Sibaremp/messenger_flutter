@@ -4,6 +4,14 @@ enum ChatType { direct, group, community }
 
 enum AttachmentType { image, video, document }
 
+/// Статус доставки сообщения (отображается только у своих сообщений)
+enum MessageStatus {
+  sending,   // ⏱ отправляется
+  sent,      // ✓  отправлено
+  delivered, // ✓✓ доставлено
+  error,     // ✗  ошибка
+}
+
 class Attachment {
   final String path;
   final AttachmentType type;
@@ -43,6 +51,7 @@ class Message {
   final String? senderName;
   final Attachment? attachment;
   final bool isEdited;
+  final MessageStatus status;
 
   Message({
     String? id,
@@ -52,9 +61,10 @@ class Message {
     this.senderName,
     this.attachment,
     this.isEdited = false,
+    this.status = MessageStatus.sent,
   }) : id = id ?? 'msg_${++_nextId}';
 
-  Message copyWith({String? text, bool? isEdited}) => Message(
+  Message copyWith({String? text, bool? isEdited, MessageStatus? status}) => Message(
     id: id,
     text: text ?? this.text,
     isMe: isMe,
@@ -62,6 +72,7 @@ class Message {
     senderName: senderName,
     attachment: attachment,
     isEdited: isEdited ?? this.isEdited,
+    status: status ?? this.status,
   );
 }
 

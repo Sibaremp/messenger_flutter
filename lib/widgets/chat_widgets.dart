@@ -34,12 +34,33 @@ class ChatAvatar extends StatelessWidget {
   }
 }
 
+// ─── Иконка статуса сообщения ─────────────────────────────────────────────────
+
+class _StatusIcon extends StatelessWidget {
+  final MessageStatus status;
+  final Color color;
+
+  const _StatusIcon({required this.status, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (status) {
+      MessageStatus.sending  => Icon(Icons.access_time,   size: 12, color: color),
+      MessageStatus.sent     => Icon(Icons.done,          size: 12, color: color),
+      MessageStatus.delivered => Icon(Icons.done_all,     size: 12, color: color),
+      MessageStatus.error    => const Icon(Icons.error_outline, size: 12, color: Colors.red),
+    };
+  }
+}
+
 // ─── Пузырь сообщения ─────────────────────────────────────────────────────────
 
 class MessageBubble extends StatelessWidget {
   final Message message;
   final bool showSenderName;
   final String? myAvatarPath;
+  /// Аватар собеседника (для личных чатов — левая сторона)
+  final String? interlocutorAvatarPath;
   final bool isSelected;
   final bool isSelectionMode;
   final VoidCallback onLongPress;
@@ -50,6 +71,7 @@ class MessageBubble extends StatelessWidget {
     required this.message,
     this.showSenderName = false,
     this.myAvatarPath,
+    this.interlocutorAvatarPath,
     this.isSelected = false,
     this.isSelectionMode = false,
     required this.onLongPress,
@@ -97,7 +119,7 @@ class MessageBubble extends StatelessWidget {
             // ── Вложение ─────────────────────────────────
             if (message.attachment != null)
               _AttachmentPreview(attachment: message.attachment!, isMe: isMe),
-            // ── Текст + метка (изм.) + время ─────────────
+            // ── Текст + метка (изм.) + время + статус ─────
             if (message.text.isNotEmpty || message.attachment == null)
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -117,6 +139,10 @@ class MessageBubble extends StatelessWidget {
                         style: TextStyle(fontSize: 10, color: timeColor)),
                   Text(formatTime(message.time),
                       style: TextStyle(fontSize: 10, color: timeColor)),
+                  if (isMe) ...[
+                    const SizedBox(width: 3),
+                    _StatusIcon(status: message.status, color: timeColor),
+                  ],
                 ],
               )
             else
@@ -133,6 +159,10 @@ class MessageBubble extends StatelessWidget {
                             style: TextStyle(fontSize: 10, color: timeColor)),
                       Text(formatTime(message.time),
                           style: TextStyle(fontSize: 10, color: timeColor)),
+                      if (isMe) ...[
+                        const SizedBox(width: 3),
+                        _StatusIcon(status: message.status, color: timeColor),
+                      ],
                     ],
                   ),
                 ),
@@ -189,9 +219,10 @@ class MessageBubble extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   if (!isMe) ...[
-                    const ChatAvatar(
-                        type: ChatType.direct,
-                        radius: AppSizes.avatarRadiusSmall),
+                    ProfileAvatar(
+                      avatarPath: interlocutorAvatarPath,
+                      radius: AppSizes.avatarRadiusSmall,
+                    ),
                     const SizedBox(width: 6),
                   ],
                   bubble,

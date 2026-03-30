@@ -588,32 +588,33 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               value: _selectedGroup,
               onChanged: (g) => setState(() => _selectedGroup = g),
             ),
-            const SizedBox(height: 16),
-            // ── Телефон для поиска ────────────────────────────────────
-            _EditField(
-              controller: _phoneController,
-              label: 'Телефон для поиска',
-              icon: Icons.phone_outlined,
-              hint: '+7 (999) 000-00-00',
-              keyboardType: TextInputType.phone,
-              suffixWidget: SimService.isSupported
-                  ? _simLoading
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : IconButton(
-                          icon: const Icon(Icons.sim_card_outlined,
-                              color: AppColors.primary),
-                          tooltip: 'Заполнить с SIM',
-                          onPressed: _fillFromSim,
-                        )
-                  : null,
-            ),
+            // ── Телефон для поиска — только на Android через SIM ─────
+            if (SimService.isSupported) ...[
+              const SizedBox(height: 16),
+              _EditField(
+                controller: _phoneController,
+                label: 'Телефон для поиска',
+                icon: Icons.phone_outlined,
+                hint: 'Нажмите SIM для заполнения',
+                keyboardType: TextInputType.phone,
+                readOnly: true,
+                suffixWidget: _simLoading
+                    ? const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    : IconButton(
+                        icon: const Icon(Icons.sim_card_outlined,
+                            color: AppColors.primary),
+                        tooltip: 'Заполнить с SIM',
+                        onPressed: _fillFromSim,
+                      ),
+              ),
+            ],
             const SizedBox(height: 8),
             // Логин — только для чтения
             Container(
@@ -743,6 +744,7 @@ class _EditField extends StatelessWidget {
   final String? hint;
   final TextInputType? keyboardType;
   final Widget? suffixWidget;
+  final bool readOnly;
 
   const _EditField({
     required this.controller,
@@ -753,6 +755,7 @@ class _EditField extends StatelessWidget {
     this.hint,
     this.keyboardType,
     this.suffixWidget,
+    this.readOnly = false,
   });
 
   @override
@@ -762,6 +765,7 @@ class _EditField extends StatelessWidget {
       maxLines: maxLines,
       maxLength: maxLength,
       keyboardType: keyboardType,
+      readOnly: readOnly,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
