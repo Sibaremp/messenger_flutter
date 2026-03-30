@@ -1,6 +1,6 @@
 # college_messenger
 
-Messenger; Chat app; Caspian College
+Messenger; Chat app
 
 ## Getting Started
 
