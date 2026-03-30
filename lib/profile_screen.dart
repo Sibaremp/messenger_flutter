@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'main.dart' show ThemeProvider, AppThemeMode, AppColors;
+import 'theme.dart' show ThemeProvider, AppThemeMode;
+import 'app_constants.dart' show AppColors;
 import 'package:image_picker/image_picker.dart';
 import 'auth_screen.dart' show AuthService, AuthScreen, kCollegeGroups;
 
