@@ -11,9 +11,11 @@ class AppTheme {
     brightness: Brightness.light,
     scaffoldBackgroundColor: AppColors.background,
     appBarTheme: const AppBarTheme(
-      backgroundColor: AppColors.primary,
-      foregroundColor: AppColors.textLight,
-      elevation: 0,
+      backgroundColor: Colors.white,
+      foregroundColor: Color(0xFF1A1A1A),
+      elevation: 0.5,
+      surfaceTintColor: Colors.transparent,
+      iconTheme: IconThemeData(color: Color(0xFF1A1A1A)),
     ),
     colorScheme: ColorScheme.fromSeed(
       seedColor: AppColors.primary,

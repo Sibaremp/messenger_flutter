@@ -23,6 +23,13 @@ import 'services/sim_service.dart';
 //   <string>Нужен доступ к камере для аватарки</string>
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Роль пользователя ────────────────────────────────────────────────────────
+
+enum ProfileRole {
+  student,  // студент
+  teacher,  // преподаватель
+}
+
 // ─── Модель профиля ───────────────────────────────────────────────────────────
 
 class UserProfile {
@@ -32,6 +39,7 @@ class UserProfile {
   final String? avatarPath; // локальный путь к файлу
   final String? group;      // учебная группа
   final String? phone;      // номер телефона для поиска
+  final ProfileRole role;   // студент или преподаватель
 
   const UserProfile({
     required this.name,
@@ -40,6 +48,7 @@ class UserProfile {
     this.avatarPath,
     this.group,
     this.phone,
+    this.role = ProfileRole.student,
   });
 
   UserProfile copyWith({
@@ -52,6 +61,7 @@ class UserProfile {
     bool clearGroup = false,
     String? phone,
     bool clearPhone = false,
+    ProfileRole? role,
   }) {
     return UserProfile(
       name: name ?? this.name,
@@ -60,8 +70,15 @@ class UserProfile {
       avatarPath: clearAvatar ? null : (avatarPath ?? this.avatarPath),
       group: clearGroup ? null : (group ?? this.group),
       phone: clearPhone ? null : (phone ?? this.phone),
+      role: role ?? this.role,
     );
   }
+
+  /// Отображаемое название роли
+  String get roleLabel => switch (role) {
+    ProfileRole.student => 'Студент',
+    ProfileRole.teacher => 'Преподаватель',
+  };
 }
 
 // ─── Расширение AuthService — методы профиля ─────────────────────────────────
@@ -71,6 +88,7 @@ extension ProfileStorage on AuthService {
   static const _keyAvatarPath = 'user_avatar_path';
   static const _keyGroup      = 'user_group';
   static const _keyPhone      = 'user_phone';
+  static const _keyRole       = 'user_role';
 
   static Future<UserProfile> loadProfile() async {
     final user       = await AuthService.getUser();
@@ -78,6 +96,8 @@ extension ProfileStorage on AuthService {
     final avatarPath = await AuthService.readExtra(_keyAvatarPath);
     final group      = await AuthService.readExtra(_keyGroup);
     final phone      = await AuthService.readExtra(_keyPhone);
+    final roleName   = await AuthService.readExtra(_keyRole);
+    final role = roleName == 'teacher' ? ProfileRole.teacher : ProfileRole.student;
     return UserProfile(
       name: user['name'] ?? '',
       login: user['login'] ?? '',
@@ -85,6 +105,7 @@ extension ProfileStorage on AuthService {
       avatarPath: avatarPath,
       group: group,
       phone: phone,
+      role: role,
     );
   }
 
@@ -94,6 +115,7 @@ extension ProfileStorage on AuthService {
       login: profile.login,
     );
     await AuthService.writeExtra(_keyBio, profile.bio);
+    await AuthService.writeExtra(_keyRole, profile.role.name);
     if (profile.avatarPath != null) {
       await AuthService.writeExtra(_keyAvatarPath, profile.avatarPath!);
     } else {
@@ -106,7 +128,7 @@ extension ProfileStorage on AuthService {
     }
     if (profile.phone != null && profile.phone!.isNotEmpty) {
       await AuthService.writeExtra(_keyPhone, profile.phone!);
-      await AuthService.addRegisteredPhone(profile.phone!); // обновляем реестр
+      await AuthService.addRegisteredPhone(profile.phone!);
     } else {
       await AuthService.deleteExtra(_keyPhone);
     }
@@ -205,6 +227,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       color: AppColors.subtle,
                     ),
                   ),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: profile.role == ProfileRole.teacher
+                          ? AppColors.primary.withValues(alpha: 0.15)
+                          : Colors.blue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      profile.roleLabel,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: profile.role == ProfileRole.teacher
+                            ? AppColors.primary
+                            : Colors.blue,
+                      ),
+                    ),
+                  ),
                   if (profile.bio.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     Padding(
@@ -224,7 +266,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            // ── Действия ───────────────────────────────────────────
+            // ── Личные данные ─────────────────────────────────────
+            const _SectionLabel('Личные данные'),
             _ProfileTile(
               icon: Icons.person_outline,
               title: 'Имя',
@@ -234,6 +277,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
               icon: Icons.alternate_email,
               title: 'Логин',
               value: profile.login,
+            ),
+            _ProfileTile(
+              icon: profile.role == ProfileRole.teacher
+                  ? Icons.school
+                  : Icons.person_outline,
+              title: 'Роль',
+              value: profile.roleLabel,
             ),
             if (profile.phone != null && profile.phone!.isNotEmpty)
               _ProfileTile(
@@ -254,7 +304,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 value: profile.bio,
               ),
             const SizedBox(height: 8),
-            // ── Переключатель темы ─────────────────────────────
+            // ── Настройки интерфейса ──────────────────────────────
+            const _SectionLabel('Настройка интерфейса'),
             const _ThemeSwitcher(),
             const SizedBox(height: 8),
             _ProfileTile(
@@ -290,6 +341,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   String? _avatarPath;
   String? _selectedGroup;
+  late ProfileRole _selectedRole;
   bool _isSaving = false;
   bool _simLoading = false;
 
@@ -301,6 +353,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _phoneController = TextEditingController(text: widget.profile.phone ?? '');
     _avatarPath  = widget.profile.avatarPath;
     _selectedGroup = widget.profile.group;
+    _selectedRole = widget.profile.role;
   }
 
   @override
@@ -492,6 +545,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       clearGroup: _selectedGroup == null,
       phone: phone.isEmpty ? null : phone,
       clearPhone: phone.isEmpty,
+      role: _selectedRole,
     );
 
     await ProfileStorage.saveProfile(updated);
@@ -566,7 +620,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
+            // ── Роль ─────────────────────────────────────────────────
+            _RoleSelector(
+              value: _selectedRole,
+              onChanged: (r) => setState(() => _selectedRole = r),
+            ),
+            const SizedBox(height: 16),
             // ── Поля ──────────────────────────────────────────────────
             _EditField(
               controller: _nameController,
@@ -701,6 +761,27 @@ class ProfileAvatar extends StatelessWidget {
 }
 
 // ─── Вспомогательные виджеты ─────────────────────────────────────────────────
+
+class _SectionLabel extends StatelessWidget {
+  final String label;
+  const _SectionLabel(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Text(
+        label.toUpperCase(),
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: AppColors.subtle,
+          letterSpacing: 0.6,
+        ),
+      ),
+    );
+  }
+}
 
 class _ProfileTile extends StatelessWidget {
   final IconData icon;
@@ -914,6 +995,85 @@ class _ThemeChip extends StatelessWidget {
   }
 }
 
+// ─── Виджет выбора роли (студент / преподаватель) ─────────────────────────────
+
+class _RoleSelector extends StatelessWidget {
+  final ProfileRole value;
+  final ValueChanged<ProfileRole> onChanged;
+
+  const _RoleSelector({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _RoleChip(
+          label: 'Студент',
+          icon: Icons.person_outline,
+          selected: value == ProfileRole.student,
+          onTap: () => onChanged(ProfileRole.student),
+        ),
+        const SizedBox(width: 8),
+        _RoleChip(
+          label: 'Преподаватель',
+          icon: Icons.school,
+          selected: value == ProfileRole.teacher,
+          onTap: () => onChanged(ProfileRole.teacher),
+        ),
+      ],
+    );
+  }
+}
+
+class _RoleChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _RoleChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected ? AppColors.primary : const Color(0xFFE0E0E0),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 18, color: selected ? Colors.white : AppColors.subtle),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? Colors.white : AppColors.subtle,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ─── Виджет-поле выбора группы ───────────────────────────────────────────────
 
 class _GroupPickerField extends StatelessWidget {
@@ -926,7 +1086,7 @@ class _GroupPickerField extends StatelessWidget {
     final picked = await Navigator.push<String>(
       context,
       MaterialPageRoute(
-        builder: (_) => _GroupPickerScreen(current: value),
+        builder: (_) => GroupPickerScreen(current: value),
         fullscreenDialog: true,
       ),
     );
@@ -986,16 +1146,16 @@ class _GroupPickerField extends StatelessWidget {
 
 // ─── Экран выбора группы ─────────────────────────────────────────────────────
 
-class _GroupPickerScreen extends StatefulWidget {
+class GroupPickerScreen extends StatefulWidget {
   final String? current;
 
-  const _GroupPickerScreen({this.current});
+  const GroupPickerScreen({super.key, this.current});
 
   @override
-  State<_GroupPickerScreen> createState() => _GroupPickerScreenState();
+  State<GroupPickerScreen> createState() => _GroupPickerScreenState();
 }
 
-class _GroupPickerScreenState extends State<_GroupPickerScreen> {
+class _GroupPickerScreenState extends State<GroupPickerScreen> {
   final _searchController = TextEditingController();
   List<String> _filtered = kCollegeGroups;
 

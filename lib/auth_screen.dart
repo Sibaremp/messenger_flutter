@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'services/sim_service.dart';
+import 'app_constants.dart' show AppColors;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pubspec.yaml:
@@ -40,6 +41,7 @@ class _StorageKeys {
   static const registeredPassword = 'registered_password';
   static const registeredGroup = 'user_group';   // совпадает с ProfileStorage._keyGroup
   static const registeredPhone = 'user_phone';   // совпадает с ProfileStorage._keyPhone
+  static const registeredRole  = 'user_role';    // совпадает с ProfileStorage._keyRole
   static const allRegisteredPhones = 'all_registered_phones'; // список всех зарег. номеров
 }
 
@@ -76,12 +78,14 @@ class AuthService {
     required String password,
     required String group,
     required String phone,
+    String role = 'student',
   }) async {
     await _storage.write(key: _StorageKeys.registeredName, value: name);
     await _storage.write(key: _StorageKeys.registeredLogin, value: login);
     await _storage.write(key: _StorageKeys.registeredPassword, value: password);
     await _storage.write(key: _StorageKeys.registeredGroup, value: group);
     await _storage.write(key: _StorageKeys.registeredPhone, value: phone);
+    await _storage.write(key: _StorageKeys.registeredRole, value: role);
     await addRegisteredPhone(phone); // добавляем в общий реестр
   }
 
@@ -537,7 +541,8 @@ class _RegisterFormState extends State<_RegisterForm> {
   final _phoneController = TextEditingController();
 
   String? _selectedGroup;
-  bool _groupTouched = false; // показывать ошибку группы только после первой попытки отправки
+  String _selectedRole = 'student'; // 'student' или 'teacher'
+  bool _groupTouched = false;
 
   bool _usePhone = false;
   bool _obscurePassword = true;
@@ -657,6 +662,7 @@ class _RegisterFormState extends State<_RegisterForm> {
       password: _passwordController.text,
       group: _selectedGroup!,
       phone: _phoneController.text.trim(),
+      role: _selectedRole,
     );
 
     await Future.delayed(const Duration(milliseconds: 500));
@@ -680,6 +686,12 @@ class _RegisterFormState extends State<_RegisterForm> {
       key: _formKey,
       child: Column(
         children: [
+          // ── Выбор роли ─────────────────────────────────────────
+          _AuthRoleSelector(
+            value: _selectedRole,
+            onChanged: (r) => setState(() => _selectedRole = r),
+          ),
+          const SizedBox(height: 12),
           _AuthField(
             controller: _nameController,
             label: 'Имя пользователя',
@@ -1256,6 +1268,85 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Выбор роли при регистрации ────────────────────────────────────────────────
+
+class _AuthRoleSelector extends StatelessWidget {
+  final String value; // 'student' или 'teacher'
+  final ValueChanged<String> onChanged;
+
+  const _AuthRoleSelector({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _AuthRoleChip(
+          label: 'Студент',
+          icon: Icons.person_outline,
+          selected: value == 'student',
+          onTap: () => onChanged('student'),
+        ),
+        const SizedBox(width: 8),
+        _AuthRoleChip(
+          label: 'Преподаватель',
+          icon: Icons.school,
+          selected: value == 'teacher',
+          onTap: () => onChanged('teacher'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AuthRoleChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _AuthRoleChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFFF6F00) : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected ? const Color(0xFFFF6F00) : const Color(0xFFE0E0E0),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 18, color: selected ? Colors.white : AppColors.subtle),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? Colors.white : AppColors.subtle,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

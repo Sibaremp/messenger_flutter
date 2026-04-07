@@ -46,6 +46,7 @@ abstract class ChatService {
     required String text,
     Attachment? attachment,
     String senderName,
+    ReplyInfo? replyTo,
   });
 
   Future<Chat> editMessage({
@@ -64,7 +65,7 @@ abstract class ChatService {
     required List<Message> messages,
   });
 
-  Future<Chat> createDirectChat({required String contactName});
+  Future<Chat> createDirectChat({required String contactName, bool isAcademic = false});
 
   Future<Chat> createGroupOrCommunity({
     required String name,
@@ -78,9 +79,48 @@ abstract class ChatService {
   /// Удаляет чат полностью. Эмитит [ChatDeleted] для подписчиков.
   Future<void> deleteChat(String chatId);
 
+  /// Добавляет комментарий к сообщению (посту) в группе/сообществе.
+  Future<Chat> addComment({
+    required String chatId,
+    required String messageId,
+    required String text,
+    String senderName = 'Я',
+  });
+
+  /// Поиск чатов/групп по имени.
+  Future<List<Chat>> searchChats(String query);
+
+  /// Поиск сообщений по тексту. Возвращает пары (чат, сообщение).
+  Future<List<SearchMessageResult>> searchMessages(String query);
+
+  /// Поиск вложений по типу файла и (опционально) имени.
+  Future<List<SearchFileResult>> searchFiles({
+    AttachmentType? type,
+    String? nameQuery,
+  });
+
   Stream<ChatEvent> get events;
 
   Future<void> dispose();
+}
+
+/// Результат поиска сообщения — чат + конкретное сообщение.
+class SearchMessageResult {
+  final Chat chat;
+  final Message message;
+  const SearchMessageResult({required this.chat, required this.message});
+}
+
+/// Результат поиска файла — чат + сообщение с вложением.
+class SearchFileResult {
+  final Chat chat;
+  final Message message;
+  final Attachment attachment;
+  const SearchFileResult({
+    required this.chat,
+    required this.message,
+    required this.attachment,
+  });
 }
 
 // ── Локальная (in-memory) реализация ──────────────────────────────────────────
@@ -91,6 +131,7 @@ class LocalChatService implements ChatService {
   LocalChatService() : _chats = _seedChats();
 
   static List<Chat> _seedChats() => [
+    // ── Обычные чаты (раздел «Общение») ──────────────────────────
     Chat(
       name: 'Алексей',
       type: ChatType.direct,
@@ -117,6 +158,50 @@ class LocalChatService implements ChatService {
             time: DateTime.now().subtract(const Duration(days: 1))),
       ],
     ),
+    // ── Академические чаты (раздел «Академический») ──────────────
+    Chat(
+      name: 'Проф. Иванов А.С.',
+      type: ChatType.direct,
+      isAcademic: true,
+      messages: [
+        Message(text: 'Добрый день! Когда можно подойти на консультацию?', isMe: true,
+            time: DateTime.now().subtract(const Duration(hours: 2))),
+        Message(text: 'Завтра с 14:00 до 16:00, аудитория 305', isMe: false,
+            senderName: 'Проф. Иванов А.С.',
+            time: DateTime.now().subtract(const Duration(hours: 1))),
+      ],
+    ),
+    Chat(
+      name: 'Физика и оптика ФО 22-1',
+      type: ChatType.community,
+      isAcademic: true,
+      adminName: 'Проф. Петров',
+      description: 'Учебная группа по физике и оптике',
+      messages: [
+        Message(text: 'Конспект лекции №14: Введение в квантовую электродинамику', isMe: false,
+            senderName: 'Проф. Петров',
+            time: DateTime.now().subtract(const Duration(hours: 3))),
+      ],
+      members: [
+        const ChatMember(name: 'Проф. Петров', role: MemberRole.creator),
+        const ChatMember(name: 'Студент 1', role: MemberRole.member),
+      ],
+    ),
+    Chat(
+      name: 'История Казахстана ФО 22',
+      type: ChatType.community,
+      isAcademic: true,
+      adminName: 'Доц. Сулейменова',
+      description: 'Курс истории Казахстана',
+      messages: [
+        Message(text: 'Домашнее задание на следующую неделю опубликовано', isMe: false,
+            senderName: 'Доц. Сулейменова',
+            time: DateTime.now().subtract(const Duration(days: 1))),
+      ],
+      members: [
+        const ChatMember(name: 'Доц. Сулейменова', role: MemberRole.creator),
+      ],
+    ),
   ];
 
   /// Возвращает индекс в списке для [chatId] или -1, если не найден.
@@ -131,12 +216,14 @@ class LocalChatService implements ChatService {
     required String text,
     Attachment? attachment,
     String senderName = 'Я',
+    ReplyInfo? replyTo,
   }) async {
     final i = _idx(chatId);
     if (i == -1) throw StateError('Chat not found: $chatId');
     final msg = Message(
       text: text, isMe: true, time: DateTime.now(),
       senderName: senderName, attachment: attachment,
+      replyTo: replyTo,
     );
     final updated = _chats[i].copyWith(messages: [..._chats[i].messages, msg]);
     _chats[i] = updated;
@@ -195,13 +282,13 @@ class LocalChatService implements ChatService {
   }
 
   @override
-  Future<Chat> createDirectChat({required String contactName}) async {
+  Future<Chat> createDirectChat({required String contactName, bool isAcademic = false}) async {
     // Повторно использует существующий чат вместо создания дубликата.
     final existing = _chats.where(
       (c) => c.name == contactName && c.type == ChatType.direct,
     ).firstOrNull;
     if (existing != null) return existing;
-    final c = Chat(name: contactName, type: ChatType.direct, messages: []);
+    final c = Chat(name: contactName, type: ChatType.direct, messages: [], isAcademic: isAcademic);
     _chats.add(c);
     _controller.add(ChatUpdated(c));
     return c;
@@ -238,6 +325,82 @@ class LocalChatService implements ChatService {
     if (i == -1) return;
     _chats.removeAt(i);
     _controller.add(ChatDeleted(chatId));
+  }
+
+  @override
+  Future<Chat> addComment({
+    required String chatId,
+    required String messageId,
+    required String text,
+    String senderName = 'Я',
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final comment = Comment(
+      text: text,
+      senderName: senderName,
+      time: DateTime.now(),
+      isMe: true,
+    );
+    final msgs = _chats[i].messages.map((m) {
+      if (m.id == messageId) {
+        return m.copyWith(comments: [...m.comments, comment]);
+      }
+      return m;
+    }).toList();
+    final updated = _chats[i].copyWith(messages: msgs);
+    _chats[i] = updated;
+    _controller.add(ChatUpdated(updated));
+    return updated;
+  }
+
+  @override
+  Future<List<Chat>> searchChats(String query) async {
+    final q = query.toLowerCase().trim();
+    if (q.isEmpty) return [];
+    return _chats.where((c) {
+      return c.name.toLowerCase().contains(q) ||
+          (c.description?.toLowerCase().contains(q) ?? false);
+    }).toList();
+  }
+
+  @override
+  Future<List<SearchMessageResult>> searchMessages(String query) async {
+    final q = query.toLowerCase().trim();
+    if (q.isEmpty) return [];
+    final results = <SearchMessageResult>[];
+    for (final chat in _chats) {
+      for (final msg in chat.messages) {
+        if (msg.text.toLowerCase().contains(q)) {
+          results.add(SearchMessageResult(chat: chat, message: msg));
+        }
+      }
+    }
+    // Сортировка: новые сообщения первыми
+    results.sort((a, b) => b.message.time.compareTo(a.message.time));
+    return results;
+  }
+
+  @override
+  Future<List<SearchFileResult>> searchFiles({
+    AttachmentType? type,
+    String? nameQuery,
+  }) async {
+    final q = nameQuery?.toLowerCase().trim() ?? '';
+    final results = <SearchFileResult>[];
+    for (final chat in _chats) {
+      for (final msg in chat.messages) {
+        final att = msg.attachment;
+        if (att == null) continue;
+        if (type != null && att.type != type) continue;
+        if (q.isNotEmpty && !att.fileName.toLowerCase().contains(q)) continue;
+        results.add(SearchFileResult(
+          chat: chat, message: msg, attachment: att,
+        ));
+      }
+    }
+    results.sort((a, b) => b.message.time.compareTo(a.message.time));
+    return results;
   }
 
   @override

@@ -15,13 +15,27 @@ class ChatAvatar extends StatelessWidget {
   final ChatType type;
   final double radius;
   final String? avatarPath;
+  /// Имя чата — используется для генерации уникального цвета аватара.
+  final String? chatName;
 
   const ChatAvatar({
     super.key,
     this.type = ChatType.direct,
     this.radius = AppSizes.avatarRadiusLarge,
     this.avatarPath,
+    this.chatName,
   });
+
+  static const _avatarColors = [
+    Color(0xFFE57373), Color(0xFF81C784), Color(0xFF64B5F6), Color(0xFFFFB74D),
+    Color(0xFFBA68C8), Color(0xFF4DD0E1), Color(0xFFF06292), Color(0xFFAED581),
+  ];
+
+  Color get _color {
+    if (chatName == null || chatName!.isEmpty) return AppColors.primary;
+    final hash = chatName!.codeUnits.fold<int>(0, (h, c) => h + c);
+    return _avatarColors[hash % _avatarColors.length];
+  }
 
   IconData get _icon => switch (type) {
     ChatType.direct    => Icons.person,
@@ -40,10 +54,11 @@ class ChatAvatar extends StatelessWidget {
         );
       }
     }
+    final color = _color;
     return CircleAvatar(
       radius: radius,
-      backgroundColor: AppColors.primary,
-      child: Icon(_icon, size: radius, color: AppColors.textLight),
+      backgroundColor: color.withValues(alpha: 0.18),
+      child: Icon(_icon, size: radius, color: color),
     );
   }
 }
@@ -71,7 +86,7 @@ class _StatusIcon extends StatelessWidget {
 
 /// Отображает одно сообщение в виде стилизованного пузырька с необязательным аватаром,
 /// подсветкой выделения и превью вложения.
-class MessageBubble extends StatelessWidget {
+class MessageBubble extends StatefulWidget {
   final Message message;
   final bool showSenderName;
   final String? myAvatarPath;
@@ -85,6 +100,12 @@ class MessageBubble extends StatelessWidget {
   final bool isSelectionMode;
   final VoidCallback onLongPress;
   final VoidCallback onTap;
+  /// Показывать ли кнопку комментариев (только для сообществ).
+  final bool showComments;
+  /// Колбэк при нажатии на «💬 N комментариев».
+  final VoidCallback? onOpenComments;
+  /// Колбэк ответа на сообщение (свайп вправо).
+  final VoidCallback? onReply;
 
   const MessageBubble({
     super.key,
@@ -97,10 +118,35 @@ class MessageBubble extends StatelessWidget {
     this.isSelectionMode = false,
     required this.onLongPress,
     required this.onTap,
+    this.showComments = false,
+    this.onOpenComments,
+    this.onReply,
   });
 
   @override
+  State<MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<MessageBubble>
+    with SingleTickerProviderStateMixin {
+  double _swipeOffset = 0;
+  bool _swipeTriggered = false;
+  static const _swipeThreshold = 64.0;
+
+  @override
   Widget build(BuildContext context) {
+    final message = widget.message;
+    final showSenderName = widget.showSenderName;
+    final myAvatarPath = widget.myAvatarPath;
+    final interlocutorAvatarPath = widget.interlocutorAvatarPath;
+    final showInterlocutorAvatar = widget.showInterlocutorAvatar;
+    final isSelected = widget.isSelected;
+    final isSelectionMode = widget.isSelectionMode;
+    final onLongPress = widget.onLongPress;
+    final onTap = widget.onTap;
+    final showComments = widget.showComments;
+    final onOpenComments = widget.onOpenComments;
+    final onReply = widget.onReply;
     final isMe = message.isMe;
     final timeColor = isMe
         ? const Color(0xB3FFFFFF)
@@ -130,13 +176,16 @@ class MessageBubble extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
                   message.senderName!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.primary,
+                    color: _senderColor(message.senderName!),
                   ),
                 ),
               ),
+            // ── Ответ (reply preview) ────────────────────
+            if (message.replyTo != null)
+              _ReplyPreview(reply: message.replyTo!, isMe: isMe),
             // ── Вложение ─────────────────────────────────
             if (message.attachment != null)
               _AttachmentPreview(attachment: message.attachment!, isMe: isMe),
@@ -194,7 +243,7 @@ class MessageBubble extends StatelessWidget {
     );
 
     // В режиме выделения касания переключают выбор; вне него долгое нажатие открывает меню действий.
-    return GestureDetector(
+    Widget row = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: isSelectionMode ? onTap : null,
       onLongPress: isSelectionMode ? null : onLongPress,
@@ -251,7 +300,41 @@ class MessageBubble extends StatelessWidget {
                   // В групповых чатах отступ, чтобы пузырь не прижимался к краю
                   if (!isMe && !showInterlocutorAvatar)
                     const SizedBox(width: 4),
-                  bubble,
+                  Flexible(
+                    child: Column(
+                      crossAxisAlignment:
+                          isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                      children: [
+                        bubble,
+                        // ── Кнопка комментариев ────────────────
+                        if (showComments)
+                          GestureDetector(
+                            onTap: onOpenComments,
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.mode_comment_outlined,
+                                      size: 14, color: AppColors.primary),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    message.comments.isEmpty
+                                        ? 'Комментировать'
+                                        : '${message.comments.length} комментари${_commentSuffix(message.comments.length)}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: AppColors.primary,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                   if (isMe) ...[
                     const SizedBox(width: 6),
                     ProfileAvatar(
@@ -266,7 +349,175 @@ class MessageBubble extends StatelessWidget {
         ),
       ),
     );
+
+    // Свайп вправо для ответа (Telegram-style с пружинящей иконкой)
+    if (onReply != null && !isSelectionMode) {
+      final swipeProgress = (_swipeOffset / _swipeThreshold).clamp(0.0, 1.0);
+      row = GestureDetector(
+        onHorizontalDragUpdate: (details) {
+          setState(() {
+            _swipeOffset = (_swipeOffset + details.delta.dx).clamp(0.0, _swipeThreshold + 20);
+            if (!_swipeTriggered && _swipeOffset >= _swipeThreshold) {
+              _swipeTriggered = true;
+              HapticFeedback.lightImpact();
+            }
+          });
+        },
+        onHorizontalDragEnd: (_) {
+          if (_swipeTriggered) onReply();
+          setState(() {
+            _swipeOffset = 0;
+            _swipeTriggered = false;
+          });
+        },
+        onHorizontalDragCancel: () {
+          setState(() {
+            _swipeOffset = 0;
+            _swipeTriggered = false;
+          });
+        },
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Иконка-индикатор свайпа
+            if (_swipeOffset > 4)
+              Positioned(
+                left: _swipeOffset - 44,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 100),
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _swipeTriggered
+                          ? AppColors.primary
+                          : AppColors.primary.withValues(alpha: 0.12),
+                    ),
+                    child: Icon(
+                      Icons.reply,
+                      size: 18 + (swipeProgress * 4),
+                      color: _swipeTriggered ? Colors.white : AppColors.primary,
+                    ),
+                  ),
+                ),
+              ),
+            // Само сообщение, сдвигается вправо
+            Transform.translate(
+              offset: Offset(_swipeOffset, 0),
+              child: row,
+            ),
+          ],
+        ),
+      );
+    }
+
+    return row;
   }
+}
+
+/// Превью ответа внутри пузыря сообщения (Telegram-style).
+class _ReplyPreview extends StatelessWidget {
+  final ReplyInfo reply;
+  final bool isMe;
+
+  const _ReplyPreview({required this.reply, required this.isMe});
+
+  @override
+  Widget build(BuildContext context) {
+    final accentColor = _senderColor(reply.senderName);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return GestureDetector(
+      // TODO: можно прокрутить к цитируемому сообщению
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 4),
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(6),
+          color: isMe
+              ? Colors.black.withValues(alpha: 0.1)
+              : accentColor.withValues(alpha: 0.1),
+        ),
+        child: IntrinsicHeight(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Цветная полоска слева (2px, скруглена с контейнером)
+              Container(
+                width: 2.5,
+                color: isMe ? Colors.white.withValues(alpha: 0.85) : accentColor,
+              ),
+              // Текст
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        reply.senderName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: isMe ? Colors.white : accentColor,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        reply.text.isEmpty ? 'Вложение' : reply.text,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isMe
+                              ? Colors.white.withValues(alpha: 0.7)
+                              : isDark
+                                  ? Colors.white70
+                                  : Colors.black54,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Генерирует уникальный цвет для имени отправителя (контрастный на светлом фоне).
+Color _senderColor(String name) {
+  const colors = [
+    Color(0xFFD32F2F), // red
+    Color(0xFF388E3C), // green
+    Color(0xFF1976D2), // blue
+    Color(0xFFE64A19), // deep orange
+    Color(0xFF7B1FA2), // purple
+    Color(0xFF00838F), // cyan
+    Color(0xFFC2185B), // pink
+    Color(0xFF455A64), // blue grey
+  ];
+  final hash = name.codeUnits.fold<int>(0, (h, c) => h * 31 + c);
+  return colors[hash.abs() % colors.length];
+}
+
+/// Склонение слова «комментарий» по числу.
+String _commentSuffix(int n) {
+  final mod10 = n % 10;
+  final mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 19) return 'ев';
+  if (mod10 == 1) return 'й';
+  if (mod10 >= 2 && mod10 <= 4) return 'я';
+  return 'ев';
 }
 
 // ─── Превью вложения ─────────────────────────────────────────────────────────
@@ -908,6 +1159,269 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ─── Bottom sheet комментариев ─────────────────────────────────────────────────
+
+/// Показывает тред комментариев к [message] в модальном bottom sheet.
+/// При отправке комментария вызывает [onSend] с текстом.
+void showCommentsSheet({
+  required BuildContext context,
+  required Message message,
+  required Future<Message?> Function(String text) onSend,
+}) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (ctx) => DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (ctx, scrollCtrl) => _CommentsSheetContent(
+        message: message,
+        scrollController: scrollCtrl,
+        onSend: onSend,
+      ),
+    ),
+  );
+}
+
+class _CommentsSheetContent extends StatefulWidget {
+  final Message message;
+  final ScrollController scrollController;
+  final Future<Message?> Function(String text) onSend;
+
+  const _CommentsSheetContent({
+    required this.message,
+    required this.scrollController,
+    required this.onSend,
+  });
+
+  @override
+  State<_CommentsSheetContent> createState() => _CommentsSheetContentState();
+}
+
+class _CommentsSheetContentState extends State<_CommentsSheetContent> {
+  final _controller = TextEditingController();
+  late Message _message;
+
+  @override
+  void initState() {
+    super.initState();
+    _message = widget.message;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    _controller.clear();
+    final updated = await widget.onSend(text);
+    if (updated != null && mounted) {
+      setState(() => _message = updated);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final comments = _message.comments;
+    return Column(
+      children: [
+        // ── Хэндл ──────────────────────────────────────────
+        const SizedBox(height: 8),
+        Container(
+          width: 40, height: 4,
+          decoration: BoxDecoration(
+            color: Colors.grey[300],
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Icon(Icons.mode_comment_outlined, size: 18, color: AppColors.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Комментарии (${comments.length})',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 16),
+        // ── Исходное сообщение (превью) ────────────────────
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            widget.message.text.length > 200
+                ? '${widget.message.text.substring(0, 200)}…'
+                : widget.message.text,
+            style: const TextStyle(fontSize: 13),
+          ),
+        ),
+        const SizedBox(height: 8),
+        // ── Список комментариев (Telegram-стиль) ───────────
+        Expanded(
+          child: comments.isEmpty
+              ? const Center(
+                  child: Text('Пока нет комментариев',
+                      style: TextStyle(color: AppColors.subtle)),
+                )
+              : ListView.builder(
+                  controller: widget.scrollController,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 4),
+                  itemCount: comments.length,
+                  itemBuilder: (ctx, i) {
+                    final c = comments[i];
+                    final isDark =
+                        Theme.of(ctx).brightness == Brightness.dark;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          // Аватар
+                          CircleAvatar(
+                            radius: 16,
+                            backgroundColor: c.isMe
+                                ? AppColors.primary
+                                : AppColors.primary.withValues(alpha: 0.2),
+                            child: Text(
+                              c.senderName.isNotEmpty
+                                  ? c.senderName[0]
+                                  : '?',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: c.isMe
+                                    ? Colors.white
+                                    : AppColors.primary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          // Пузырь сообщения
+                          Flexible(
+                            child: Container(
+                              padding: const EdgeInsets.fromLTRB(
+                                  12, 8, 12, 6),
+                              decoration: BoxDecoration(
+                                color: c.isMe
+                                    ? AppColors.primary
+                                        .withValues(alpha: 0.15)
+                                    : isDark
+                                        ? Colors.white
+                                            .withValues(alpha: 0.08)
+                                        : const Color(0xFFF0F0F0),
+                                borderRadius: BorderRadius.only(
+                                  topLeft: const Radius.circular(14),
+                                  topRight: const Radius.circular(14),
+                                  bottomRight: const Radius.circular(14),
+                                  bottomLeft: const Radius.circular(4),
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                                  // Имя отправителя
+                                  Text(
+                                    c.senderName,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13,
+                                      color: _senderColor(c.senderName),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  // Текст + время
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.end,
+                                    children: [
+                                      Flexible(
+                                        child: Text(c.text,
+                                            style: const TextStyle(
+                                                fontSize: 14)),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        formatTime(c.time),
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: AppColors.subtle,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+        // ── Поле ввода ─────────────────────────────────────
+        SafeArea(
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).cardColor,
+              border: Border(top: BorderSide(color: Colors.grey[300]!)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _send(),
+                    decoration: InputDecoration(
+                      hintText: 'Написать комментарий…',
+                      filled: true,
+                      fillColor: Theme.of(context).scaffoldBackgroundColor,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: const Icon(Icons.send, color: AppColors.primary),
+                  onPressed: _send,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

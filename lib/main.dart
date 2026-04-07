@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'theme.dart';
 import 'services/chat_service.dart';
-import 'screens/chat_list_screen.dart';
+import 'responsive_shell.dart';
 import 'auth_screen.dart';
 
 /// Точка входа: оборачивает приложение в [ThemeProvider], чтобы состояние темы
@@ -34,7 +34,7 @@ class MyApp extends StatelessWidget {
         Locale('en', 'US'),
         Locale('kk', 'KZ'),
       ],
-      home: AuthGate(homeScreen: ChatListScreen(service: service)),
+      home: AuthGate(homeScreen: ResponsiveShell(service: service)),
     );
   }
 }

@@ -19,6 +19,12 @@ class AppSizes {
   static const avatarRadiusLarge      = 24.0;
   /// Пузырьки сообщений ограничены 70 % ширины экрана.
   static const bubbleMaxWidthFactor   = 0.7;
+  /// Порог переключения на десктопный трёхпанельный режим.
+  static const desktopBreakpoint      = 800.0;
+  /// Ширина боковой панели навигации (desktop).
+  static const sidebarWidth           = 220.0;
+  /// Ширина средней панели со списком чатов (desktop).
+  static const middlePanelWidth       = 300.0;
 }
 
 /// Расширения файлов, воспринимаемые как видео при выборе документов.

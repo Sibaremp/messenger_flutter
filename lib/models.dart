@@ -42,8 +42,10 @@ class AppContact {
   final String name;
   final String? group;
   final String? phone;
+  /// true — преподаватель (отображается в «Академический»), false — студент (в «Общение»).
+  final bool isTeacher;
 
-  const AppContact({required this.name, this.group, this.phone});
+  const AppContact({required this.name, this.group, this.phone, this.isTeacher = false});
 }
 
 /// Отдельное сообщение чата с необязательным вложением и статусом доставки.
@@ -59,6 +61,9 @@ class Message {
   final Attachment? attachment;
   final bool isEdited;
   final MessageStatus status;
+  final List<Comment> comments;
+  /// Ответ на сообщение (Telegram-style reply).
+  final ReplyInfo? replyTo;
 
   Message({
     String? id,
@@ -69,9 +74,18 @@ class Message {
     this.attachment,
     this.isEdited = false,
     this.status = MessageStatus.sent,
+    this.comments = const [],
+    this.replyTo,
   }) : id = id ?? 'msg_${++_nextId}';
 
-  Message copyWith({String? text, bool? isEdited, MessageStatus? status}) => Message(
+  Message copyWith({
+    String? text,
+    bool? isEdited,
+    MessageStatus? status,
+    List<Comment>? comments,
+    ReplyInfo? replyTo,
+    bool clearReply = false,
+  }) => Message(
     id: id,
     text: text ?? this.text,
     isMe: isMe,
@@ -80,7 +94,41 @@ class Message {
     attachment: attachment,
     isEdited: isEdited ?? this.isEdited,
     status: status ?? this.status,
+    comments: comments ?? this.comments,
+    replyTo: clearReply ? null : (replyTo ?? this.replyTo),
   );
+}
+
+/// Комментарий к сообщению (посту) — аналог тредов в Telegram-каналах.
+class Comment {
+  static int _nextId = 0;
+
+  final String id;
+  final String text;
+  final String senderName;
+  final DateTime time;
+  final bool isMe;
+
+  Comment({
+    String? id,
+    required this.text,
+    required this.senderName,
+    required this.time,
+    this.isMe = false,
+  }) : id = id ?? 'cmt_${++_nextId}';
+}
+
+/// Информация об ответе на сообщение (reply).
+class ReplyInfo {
+  final String messageId;
+  final String senderName;
+  final String text;
+
+  const ReplyInfo({
+    required this.messageId,
+    required this.senderName,
+    required this.text,
+  });
 }
 
 /// Уровень привилегий участника в групповом чате или сообществе.
@@ -113,6 +161,8 @@ class Chat {
   final String? avatarPath;
   final String? description;
   final DateTime? createdAt;
+  /// Флаг: чат принадлежит академическому разделу (преподаватели)
+  final bool isAcademic;
 
   Chat({
     String? id,
@@ -124,6 +174,7 @@ class Chat {
     this.avatarPath,
     this.description,
     this.createdAt,
+    this.isAcademic = false,
   }) : id = id ?? 'chat_${++_nextId}';
 
   String get lastMessage {
@@ -162,6 +213,7 @@ class Chat {
     Object? avatarPath = _keep,
     Object? description = _keep,
     DateTime? createdAt,
+    bool? isAcademic,
   }) {
     return Chat(
       id: id,
@@ -173,6 +225,7 @@ class Chat {
       avatarPath: identical(avatarPath, _keep) ? this.avatarPath : avatarPath as String?,
       description: identical(description, _keep) ? this.description : description as String?,
       createdAt: createdAt ?? this.createdAt,
+      isAcademic: isAcademic ?? this.isAcademic,
     );
   }
 }

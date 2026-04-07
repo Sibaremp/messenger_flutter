@@ -8,6 +8,7 @@ import '../services/chat_service.dart';
 import '../widgets/chat_widgets.dart';
 import '../profile_screen.dart' show ProfileStorage;
 import 'chat_settings_screen.dart';
+import 'comments_screen.dart';
 import 'contact_profile_screen.dart';
 import 'group_profile_screen.dart';
 
@@ -17,6 +18,8 @@ class ChatScreen extends StatefulWidget {
   final ChatService service;
   final ValueChanged<Chat> onChatUpdated;
   final List<AppContact> contacts;
+  /// Если true — экран встроен в панель (desktop), кнопка «назад» скрыта.
+  final bool embedded;
 
   const ChatScreen({
     super.key,
@@ -24,6 +27,7 @@ class ChatScreen extends StatefulWidget {
     required this.service,
     required this.onChatUpdated,
     this.contacts = const [],
+    this.embedded = false,
   });
 
   @override
@@ -43,6 +47,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── Режим редактирования ──────────────────────────────
   Message? _editingMessage;
+
+  // ── Ответ на сообщение (reply) ───────────────────────
+  Message? _replyingTo;
+
+  // ── Комментарии (embedded-режим, desktop) ────────────
+  Message? _commentsMessage;
+
+  // ── Встроенный профиль (embedded-режим, desktop) ─────
+  /// 'group' | 'contact' | null
+  String? _embeddedProfileType;
 
   @override
   void initState() {
@@ -78,19 +92,38 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty && attachment == null) return;
     _controller.clear();
 
+    final reply = _replyingTo != null
+        ? ReplyInfo(
+            messageId: _replyingTo!.id,
+            senderName: _replyingTo!.senderName ?? (_replyingTo!.isMe ? 'Вы' : _currentChat.name),
+            text: _replyingTo!.text,
+          )
+        : null;
+
     final updated = await widget.service.sendMessage(
       chatId: _currentChat.id,
       text: text,
       attachment: attachment,
+      replyTo: reply,
     );
     if (!mounted) return;
     setState(() {
       _messages = List.from(updated.messages);
       _currentChat = updated;
+      _replyingTo = null;
     });
     widget.onChatUpdated(updated);
     _scrollToBottom();
   }
+
+  void _startReply(Message message) {
+    setState(() {
+      _replyingTo = message;
+      _editingMessage = null;
+    });
+  }
+
+  void _cancelReply() => setState(() => _replyingTo = null);
 
   // ── Редактирование ────────────────────────────────────
   void _startEdit(Message message) {
@@ -233,7 +266,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             ...others.map((c) => ListTile(
-              leading: ChatAvatar(type: c.type),
+              leading: ChatAvatar(type: c.type, chatName: c.name),
               title: Text(c.name),
               onTap: () {
                 Navigator.pop(context);
@@ -281,6 +314,15 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             const SizedBox(height: 8),
+            // Ответить
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+                child: const Icon(Icons.reply, color: AppColors.primary, size: 20),
+              ),
+              title: const Text('Ответить'),
+              onTap: () { Navigator.pop(context); _startReply(message); },
+            ),
             // Редактировать (только своё текстовое сообщение)
             if (message.isMe &&
                 message.text.isNotEmpty &&
@@ -297,7 +339,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ListTile(
               leading: const CircleAvatar(
                 backgroundColor: AppColors.primary,
-                child: Icon(Icons.reply, color: Colors.white, size: 20),
+                child: Icon(Icons.shortcut, color: Colors.white, size: 20),
               ),
               title: const Text('Переслать'),
               onTap: () { Navigator.pop(context); _showForwardDialog([message]); },
@@ -448,8 +490,72 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Открывает раздел комментариев к [message].
+  /// На desktop (embedded) — показывает внутри панели.
+  /// На mobile — Navigator.push.
+  void _openComments(Message message) {
+    if (widget.embedded) {
+      // Desktop: показываем CommentsScreen прямо здесь
+      setState(() => _commentsMessage = message);
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CommentsScreen(
+          message: message,
+          chat: _currentChat,
+          onSend: (text) async {
+            final updated = await widget.service.addComment(
+              chatId: _currentChat.id,
+              messageId: message.id,
+              text: text,
+            );
+            if (!mounted) return null;
+            setState(() {
+              _messages = List.from(updated.messages);
+              _currentChat = updated;
+            });
+            widget.onChatUpdated(updated);
+            return updated.messages.firstWhere((m) => m.id == message.id);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmbeddedComments(Message message) {
+    return CommentsScreen(
+      key: ValueKey('comments_${message.id}'),
+      message: message,
+      chat: _currentChat,
+      embedded: true,
+      onBack: () => setState(() => _commentsMessage = null),
+      onSend: (text) async {
+        final updated = await widget.service.addComment(
+          chatId: _currentChat.id,
+          messageId: message.id,
+          text: text,
+        );
+        if (!mounted) return null;
+        setState(() {
+          _messages = List.from(updated.messages);
+          _currentChat = updated;
+          // Обновляем ссылку на сообщение для комментариев
+          _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+        });
+        widget.onChatUpdated(updated);
+        return updated.messages.firstWhere((m) => m.id == message.id);
+      },
+    );
+  }
+
   /// Открывает профиль группы / сообщества (только для не-личных чатов).
   void _openGroupProfile() {
+    if (widget.embedded) {
+      setState(() => _embeddedProfileType = 'group');
+      return;
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -461,7 +567,10 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Открывает экран профиля собеседника (только для личных чатов).
   void _openContactProfile() {
     if (_currentChat.type != ChatType.direct) return;
-    // Ищем контакт по имени, чтобы передать номер телефона.
+    if (widget.embedded) {
+      setState(() => _embeddedProfileType = 'contact');
+      return;
+    }
     final contact = widget.contacts
         .where((c) => c.name == _currentChat.name)
         .firstOrNull;
@@ -476,6 +585,43 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildEmbeddedProfile() {
+    void backFn() => setState(() => _embeddedProfileType = null);
+    if (_embeddedProfileType == 'group') {
+      return GroupProfileScreen(
+        key: ValueKey('gp_${_currentChat.id}'),
+        chat: _currentChat,
+        embedded: true,
+        onBack: backFn,
+      );
+    }
+    // contact
+    final contact = widget.contacts
+        .where((c) => c.name == _currentChat.name)
+        .firstOrNull;
+    return ContactProfileScreen(
+      key: ValueKey('cp_${_currentChat.name}'),
+      name: _currentChat.name,
+      avatarPath: _currentChat.avatarPath,
+      description: _currentChat.description,
+      phone: contact?.phone,
+      embedded: true,
+      onBack: backFn,
+    );
+  }
+
+  /// Проверяет, может ли текущий пользователь открыть настройки группы.
+  /// Доступ только для создателя или админа.
+  bool _canAccessSettings(Chat chat) {
+    // Если текущий пользователь — создатель (adminName == 'Я')
+    if (chat.adminName == 'Я') return true;
+    // Проверяем роль в списке участников
+    // Текущий пользователь не является участником members — он создатель по-умолчанию
+    // Если нет adminName, значит создатель — текущий пользователь
+    if (chat.adminName == null) return true;
+    return false;
   }
 
   Future<void> _openSettings() async {
@@ -521,11 +667,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Desktop embedded: показываем вложенные экраны вместо чата
+    if (widget.embedded) {
+      if (_embeddedProfileType != null) return _buildEmbeddedProfile();
+      if (_commentsMessage != null) return _buildEmbeddedComments(_commentsMessage!);
+    }
+
     final chat = _currentChat;
 
     return Scaffold(
       appBar: _isSelectionMode
           ? AppBar(
+              automaticallyImplyLeading: false,
               leading: IconButton(
                 icon: const Icon(Icons.close),
                 onPressed: _exitSelectionMode,
@@ -548,30 +701,50 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           : AppBar(
               // Аватар чата слева от заголовка
-              leadingWidth: 72,
-              leading: Padding(
-                padding: const EdgeInsets.fromLTRB(8, 4, 0, 4),
-                child: Row(
-                  children: [
-                    // Кнопка «назад»
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back),
-                      padding: EdgeInsets.zero,
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                    GestureDetector(
-                      onTap: chat.type == ChatType.direct
-                          ? _openContactProfile
-                          : _openGroupProfile,
-                      child: ChatAvatar(
-                        type: chat.type,
-                        avatarPath: chat.avatarPath,
-                        radius: AppSizes.avatarRadiusSmall,
+              automaticallyImplyLeading: false,
+              leadingWidth: widget.embedded ? 48 : 90,
+              leading: widget.embedded
+                  ? Padding(
+                      padding: const EdgeInsets.only(left: 12),
+                      child: GestureDetector(
+                        onTap: chat.type == ChatType.direct
+                            ? _openContactProfile
+                            : _openGroupProfile,
+                        child: ChatAvatar(
+                          type: chat.type,
+                          avatarPath: chat.avatarPath,
+                          chatName: chat.name,
+                          radius: AppSizes.avatarRadiusSmall,
+                        ),
+                      ),
+                    )
+                  : Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 40,
+                            child: IconButton(
+                              icon: const Icon(Icons.arrow_back, size: 22),
+                              padding: EdgeInsets.zero,
+                              onPressed: () => Navigator.of(context).pop(),
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: chat.type == ChatType.direct
+                                ? _openContactProfile
+                                : _openGroupProfile,
+                            child: ChatAvatar(
+                              type: chat.type,
+                              avatarPath: chat.avatarPath,
+                              chatName: chat.name,
+                              radius: AppSizes.avatarRadiusSmall,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-              ),
               title: GestureDetector(
                 onTap: chat.type == ChatType.direct
                     ? _openContactProfile
@@ -593,7 +766,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
               actions: [
-                if (chat.type != ChatType.direct)
+                if (chat.type != ChatType.direct && _canAccessSettings(chat))
                   IconButton(
                     icon: const Icon(Icons.settings_outlined),
                     tooltip: 'Настройки',
@@ -623,11 +796,23 @@ class _ChatScreenState extends State<ChatScreen> {
                   isSelectionMode: _isSelectionMode,
                   onLongPress: () => _showMessageActions(msg),
                   onTap: () => _toggleSelect(msg.id),
+                  // Комментарии — только для сообществ
+                  showComments: chat.type == ChatType.community,
+                  onOpenComments: chat.type == ChatType.community
+                      ? () => _openComments(msg)
+                      : null,
+                  onReply: () => _startReply(msg),
                 );
               },
             ),
           ),
           if (!_isSelectionMode) ...[
+            if (_replyingTo != null)
+              _ReplyIndicator(
+                message: _replyingTo!,
+                chatName: _currentChat.name,
+                onCancel: _cancelReply,
+              ),
             if (_editingMessage != null)
               EditingIndicator(
                 message: _editingMessage!,
@@ -643,6 +828,94 @@ class _ChatScreenState extends State<ChatScreen> {
             else
               const LockedInput(),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Индикатор ответа на сообщение (над полем ввода, Telegram-style).
+class _ReplyIndicator extends StatelessWidget {
+  final Message message;
+  final String chatName;
+  final VoidCallback onCancel;
+
+  const _ReplyIndicator({
+    required this.message,
+    required this.chatName,
+    required this.onCancel,
+  });
+
+  static const _nameColors = [
+    Color(0xFFD32F2F), Color(0xFF388E3C), Color(0xFF1976D2), Color(0xFFE64A19),
+    Color(0xFF7B1FA2), Color(0xFF00838F), Color(0xFFC2185B), Color(0xFF455A64),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final senderName = message.isMe
+        ? 'Вы'
+        : (message.senderName ?? chatName);
+    final hash = senderName.codeUnits.fold<int>(0, (h, c) => h * 31 + c);
+    final accentColor = _nameColors[hash.abs() % _nameColors.length];
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        border: Border(
+          top: BorderSide(
+            color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06),
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          // Цветная полоска (как в Telegram)
+          Container(
+            width: 2.5,
+            height: 34,
+            decoration: BoxDecoration(
+              color: accentColor,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(senderName,
+                    style: TextStyle(
+                      color: accentColor,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(
+                  message.text.isEmpty
+                      ? (message.attachment != null ? 'Вложение' : '')
+                      : message.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: isDark ? Colors.white54 : Colors.black45),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 36,
+            height: 36,
+            child: IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              onPressed: onCancel,
+              color: AppColors.subtle,
+              padding: EdgeInsets.zero,
+            ),
+          ),
         ],
       ),
     );
