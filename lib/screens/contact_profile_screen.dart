@@ -11,6 +11,8 @@ class ContactProfileScreen extends StatefulWidget {
   final String? avatarPath;
   final String? description;
   final String? phone;
+  /// Учебная группа собеседника (для студентов).
+  final String? group;
   /// Если true — встроен в панель (desktop).
   final bool embedded;
   final VoidCallback? onBack;
@@ -21,6 +23,7 @@ class ContactProfileScreen extends StatefulWidget {
     this.avatarPath,
     this.description,
     this.phone,
+    this.group,
     this.embedded = false,
     this.onBack,
   });
@@ -69,6 +72,7 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final hasDesc = widget.description?.isNotEmpty == true;
     final hasPhone = widget.phone?.isNotEmpty == true;
+    final hasGroup = widget.group?.isNotEmpty == true;
 
     final scaffold = Scaffold(
       backgroundColor:
@@ -196,7 +200,7 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                   const SizedBox(height: 12),
 
                   // ── Информация ────────────────────────────────
-                  if (hasDesc || hasPhone) ...[
+                  if (hasDesc || hasPhone || hasGroup) ...[
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 4, 16, 8),
                       child: Text('Информация',
@@ -216,7 +220,7 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                             value: widget.description!,
                             isDark: isDark,
                           ),
-                        if (hasDesc && hasPhone) _divider(isDark),
+                        if (hasDesc && (hasPhone || hasGroup)) _divider(isDark),
                         if (hasPhone)
                           _InfoRow(
                             icon: Icons.phone_outlined,
@@ -249,11 +253,19 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                                   )
                                 : null,
                           ),
+                        if (hasPhone && hasGroup) _divider(isDark),
+                        if (hasGroup)
+                          _InfoRow(
+                            icon: Icons.school_outlined,
+                            label: 'Учебная группа',
+                            value: widget.group!,
+                            isDark: isDark,
+                          ),
                       ],
                     ),
                   ],
 
-                  if (!hasDesc && !hasPhone) ...[
+                  if (!hasDesc && !hasPhone && !hasGroup) ...[
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 4, 16, 8),
                       child: Text('Информация',

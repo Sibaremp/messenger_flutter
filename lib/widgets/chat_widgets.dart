@@ -74,10 +74,11 @@ class _StatusIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return switch (status) {
-      MessageStatus.sending  => Icon(Icons.access_time,   size: 12, color: color),
-      MessageStatus.sent     => Icon(Icons.done,          size: 12, color: color),
-      MessageStatus.delivered => Icon(Icons.done_all,     size: 12, color: color),
-      MessageStatus.error    => const Icon(Icons.error_outline, size: 12, color: Colors.red),
+      MessageStatus.sending   => Icon(Icons.access_time, size: 14, color: color),
+      MessageStatus.sent      => Icon(Icons.done, size: 16, color: color),
+      MessageStatus.delivered => Icon(Icons.done_all, size: 16, color: color),
+      MessageStatus.read      => const Icon(Icons.done_all, size: 16, color: Color(0xFF4FC3F7)),
+      MessageStatus.error     => const Icon(Icons.error_outline, size: 14, color: Colors.red),
     };
   }
 }
@@ -174,13 +175,26 @@ class _MessageBubbleState extends State<MessageBubble>
             if (showSenderName && !isMe && message.senderName != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  message.senderName!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: _senderColor(message.senderName!),
-                  ),
+                child: Text.rich(
+                  TextSpan(children: [
+                    if (message.senderGroup != null)
+                      TextSpan(
+                        text: '${message.senderGroup}  ',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: _senderColor(message.senderName!).withValues(alpha: 0.7),
+                        ),
+                      ),
+                    TextSpan(
+                      text: message.senderName!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _senderColor(message.senderName!),
+                      ),
+                    ),
+                  ]),
                 ),
               ),
             // ── Ответ (reply preview) ────────────────────

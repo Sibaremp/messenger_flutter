@@ -24,6 +24,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
   late final TextEditingController _loginCtrl;
   late final TextEditingController _roleCtrl;
   late final TextEditingController _phoneCtrl;
+  late final TextEditingController _groupCtrl;
   late final TextEditingController _bioCtrl;
   String? _avatarPath;
   bool _saving = false;
@@ -38,6 +39,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
     _loginCtrl = TextEditingController();
     _roleCtrl = TextEditingController();
     _phoneCtrl = TextEditingController();
+    _groupCtrl = TextEditingController();
     _bioCtrl = TextEditingController();
     _loadProfile();
   }
@@ -48,6 +50,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
     _loginCtrl.dispose();
     _roleCtrl.dispose();
     _phoneCtrl.dispose();
+    _groupCtrl.dispose();
     _bioCtrl.dispose();
     super.dispose();
   }
@@ -61,6 +64,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
       _loginCtrl.text = profile.login;
       _roleCtrl.text = profile.roleLabel;
       _phoneCtrl.text = profile.phone ?? '';
+      _groupCtrl.text = profile.group ?? '';
       _bioCtrl.text = profile.bio;
       _avatarPath = profile.avatarPath;
       _pendingTheme = ThemeProvider.of(context).mode;
@@ -245,13 +249,30 @@ class _ProfilePanelState extends State<ProfilePanel> {
                 ],
               ),
               const SizedBox(height: 16),
-              _UnderlineField(
-                label: 'Телефон',
-                controller: _phoneCtrl,
-                hint: '+7 000-000-00-00',
-                fieldColor: fieldColor,
-                labelColor: labelColor,
-                dividerColor: dividerColor,
+              Row(
+                children: [
+                  Expanded(
+                    child: _UnderlineField(
+                      label: 'Телефон',
+                      controller: _phoneCtrl,
+                      readOnly: true,
+                      fieldColor: fieldColor,
+                      labelColor: labelColor,
+                      dividerColor: dividerColor,
+                    ),
+                  ),
+                  const SizedBox(width: 24),
+                  Expanded(
+                    child: _UnderlineField(
+                      label: 'Учебная группа',
+                      controller: _groupCtrl,
+                      readOnly: true,
+                      fieldColor: fieldColor,
+                      labelColor: labelColor,
+                      dividerColor: dividerColor,
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
               // ── Описание / О себе ──────────────────────────────────

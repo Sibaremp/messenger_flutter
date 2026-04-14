@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 /// Цветовая палитра приложения. Приватный конструктор запрещает создание экземпляров.
 class AppColors {
   const AppColors._();
-  static const primary    = Color(0xFFFF6F00);
+  static const primary    = Color(0xFFD4765B);
   static const background = Color(0xFFF5F5F5);
-  static const chatMe     = Color(0xFFFF6F00);
+  static const chatMe     = Color(0xFFD4765B);
   static const chatOther  = Color(0xFFFFFFFF);
   static const textDark   = Color(0xFF000000);
   static const textLight  = Color(0xFFFFFFFF);

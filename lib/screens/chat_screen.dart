@@ -493,9 +493,66 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Открывает раздел комментариев к [message].
   /// На desktop (embedded) — показывает внутри панели.
   /// На mobile — Navigator.push.
+  // ── Общие колбэки для комментариев ──────────────
+  Future<Message?> _commentOnSend(Message message, String text, {Attachment? attachment, ReplyInfo? replyTo}) async {
+    final updated = await widget.service.addComment(
+      chatId: _currentChat.id,
+      messageId: message.id,
+      text: text,
+      attachment: attachment,
+      replyTo: replyTo,
+    );
+    if (!mounted) return null;
+    setState(() {
+      _messages = List.from(updated.messages);
+      _currentChat = updated;
+      if (_commentsMessage != null) {
+        _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+      }
+    });
+    widget.onChatUpdated(updated);
+    return updated.messages.firstWhere((m) => m.id == message.id);
+  }
+
+  Future<Message?> _commentOnEdit(Message message, String commentId, String newText) async {
+    final updated = await widget.service.editComment(
+      chatId: _currentChat.id,
+      messageId: message.id,
+      commentId: commentId,
+      newText: newText,
+    );
+    if (!mounted) return null;
+    setState(() {
+      _messages = List.from(updated.messages);
+      _currentChat = updated;
+      if (_commentsMessage != null) {
+        _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+      }
+    });
+    widget.onChatUpdated(updated);
+    return updated.messages.firstWhere((m) => m.id == message.id);
+  }
+
+  Future<Message?> _commentOnDelete(Message message, List<String> commentIds) async {
+    final updated = await widget.service.deleteComments(
+      chatId: _currentChat.id,
+      messageId: message.id,
+      commentIds: commentIds,
+    );
+    if (!mounted) return null;
+    setState(() {
+      _messages = List.from(updated.messages);
+      _currentChat = updated;
+      if (_commentsMessage != null) {
+        _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
+      }
+    });
+    widget.onChatUpdated(updated);
+    return updated.messages.firstWhere((m) => m.id == message.id);
+  }
+
   void _openComments(Message message) {
     if (widget.embedded) {
-      // Desktop: показываем CommentsScreen прямо здесь
       setState(() => _commentsMessage = message);
       return;
     }
@@ -505,20 +562,13 @@ class _ChatScreenState extends State<ChatScreen> {
         builder: (_) => CommentsScreen(
           message: message,
           chat: _currentChat,
-          onSend: (text) async {
-            final updated = await widget.service.addComment(
-              chatId: _currentChat.id,
-              messageId: message.id,
-              text: text,
-            );
-            if (!mounted) return null;
-            setState(() {
-              _messages = List.from(updated.messages);
-              _currentChat = updated;
-            });
-            widget.onChatUpdated(updated);
-            return updated.messages.firstWhere((m) => m.id == message.id);
-          },
+          service: widget.service,
+          onSend: (text, {attachment, replyTo}) =>
+              _commentOnSend(message, text, attachment: attachment, replyTo: replyTo),
+          onEdit: (commentId, newText) =>
+              _commentOnEdit(message, commentId, newText),
+          onDelete: (commentIds) =>
+              _commentOnDelete(message, commentIds),
         ),
       ),
     );
@@ -529,24 +579,15 @@ class _ChatScreenState extends State<ChatScreen> {
       key: ValueKey('comments_${message.id}'),
       message: message,
       chat: _currentChat,
+      service: widget.service,
       embedded: true,
       onBack: () => setState(() => _commentsMessage = null),
-      onSend: (text) async {
-        final updated = await widget.service.addComment(
-          chatId: _currentChat.id,
-          messageId: message.id,
-          text: text,
-        );
-        if (!mounted) return null;
-        setState(() {
-          _messages = List.from(updated.messages);
-          _currentChat = updated;
-          // Обновляем ссылку на сообщение для комментариев
-          _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
-        });
-        widget.onChatUpdated(updated);
-        return updated.messages.firstWhere((m) => m.id == message.id);
-      },
+      onSend: (text, {attachment, replyTo}) =>
+          _commentOnSend(message, text, attachment: attachment, replyTo: replyTo),
+      onEdit: (commentId, newText) =>
+          _commentOnEdit(message, commentId, newText),
+      onDelete: (commentIds) =>
+          _commentOnDelete(message, commentIds),
     );
   }
 
@@ -582,6 +623,7 @@ class _ChatScreenState extends State<ChatScreen> {
           avatarPath: _currentChat.avatarPath,
           description: _currentChat.description,
           phone: contact?.phone,
+          group: contact?.group,
         ),
       ),
     );
@@ -607,6 +649,7 @@ class _ChatScreenState extends State<ChatScreen> {
       avatarPath: _currentChat.avatarPath,
       description: _currentChat.description,
       phone: contact?.phone,
+      group: contact?.group,
       embedded: true,
       onBack: backFn,
     );
@@ -853,9 +896,12 @@ class _ReplyIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final senderName = message.isMe
+    final baseName = message.isMe
         ? 'Вы'
         : (message.senderName ?? chatName);
+    final senderName = (!message.isMe && message.senderGroup != null)
+        ? '${message.senderGroup} $baseName'
+        : baseName;
     final hash = senderName.codeUnits.fold<int>(0, (h, c) => h * 31 + c);
     final accentColor = _nameColors[hash.abs() % _nameColors.length];
     final isDark = Theme.of(context).brightness == Brightness.dark;

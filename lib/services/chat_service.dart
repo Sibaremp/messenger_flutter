@@ -46,6 +46,7 @@ abstract class ChatService {
     required String text,
     Attachment? attachment,
     String senderName,
+    String? senderGroup,
     ReplyInfo? replyTo,
   });
 
@@ -85,6 +86,24 @@ abstract class ChatService {
     required String messageId,
     required String text,
     String senderName = 'Я',
+    String? senderGroup,
+    Attachment? attachment,
+    ReplyInfo? replyTo,
+  });
+
+  /// Редактирует текст комментария.
+  Future<Chat> editComment({
+    required String chatId,
+    required String messageId,
+    required String commentId,
+    required String newText,
+  });
+
+  /// Удаляет комментарии по id.
+  Future<Chat> deleteComments({
+    required String chatId,
+    required String messageId,
+    required List<String> commentIds,
   });
 
   /// Поиск чатов/групп по имени.
@@ -184,7 +203,7 @@ class LocalChatService implements ChatService {
       ],
       members: [
         const ChatMember(name: 'Проф. Петров', role: MemberRole.creator),
-        const ChatMember(name: 'Студент 1', role: MemberRole.member),
+        const ChatMember(name: 'Студент 1', group: 'ФО-22', role: MemberRole.member),
       ],
     ),
     Chat(
@@ -216,14 +235,17 @@ class LocalChatService implements ChatService {
     required String text,
     Attachment? attachment,
     String senderName = 'Я',
+    String? senderGroup,
     ReplyInfo? replyTo,
   }) async {
     final i = _idx(chatId);
     if (i == -1) throw StateError('Chat not found: $chatId');
     final msg = Message(
       text: text, isMe: true, time: DateTime.now(),
-      senderName: senderName, attachment: attachment,
+      senderName: senderName, senderGroup: senderGroup,
+      attachment: attachment,
       replyTo: replyTo,
+      status: MessageStatus.delivered,
     );
     final updated = _chats[i].copyWith(messages: [..._chats[i].messages, msg]);
     _chats[i] = updated;
@@ -333,18 +355,71 @@ class LocalChatService implements ChatService {
     required String messageId,
     required String text,
     String senderName = 'Я',
+    String? senderGroup,
+    Attachment? attachment,
+    ReplyInfo? replyTo,
   }) async {
     final i = _idx(chatId);
     if (i == -1) throw StateError('Chat not found: $chatId');
     final comment = Comment(
       text: text,
       senderName: senderName,
+      senderGroup: senderGroup,
       time: DateTime.now(),
       isMe: true,
+      attachment: attachment,
+      replyTo: replyTo,
     );
     final msgs = _chats[i].messages.map((m) {
       if (m.id == messageId) {
         return m.copyWith(comments: [...m.comments, comment]);
+      }
+      return m;
+    }).toList();
+    final updated = _chats[i].copyWith(messages: msgs);
+    _chats[i] = updated;
+    _controller.add(ChatUpdated(updated));
+    return updated;
+  }
+
+  @override
+  Future<Chat> editComment({
+    required String chatId,
+    required String messageId,
+    required String commentId,
+    required String newText,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final msgs = _chats[i].messages.map((m) {
+      if (m.id == messageId) {
+        final updatedComments = m.comments.map((c) {
+          if (c.id == commentId) return c.copyWith(text: newText, isEdited: true);
+          return c;
+        }).toList();
+        return m.copyWith(comments: updatedComments);
+      }
+      return m;
+    }).toList();
+    final updated = _chats[i].copyWith(messages: msgs);
+    _chats[i] = updated;
+    _controller.add(ChatUpdated(updated));
+    return updated;
+  }
+
+  @override
+  Future<Chat> deleteComments({
+    required String chatId,
+    required String messageId,
+    required List<String> commentIds,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final ids = commentIds.toSet();
+    final msgs = _chats[i].messages.map((m) {
+      if (m.id == messageId) {
+        final filtered = m.comments.where((c) => !ids.contains(c.id)).toList();
+        return m.copyWith(comments: filtered);
       }
       return m;
     }).toList();

@@ -7,7 +7,7 @@ import '../app_constants.dart';
 import '../services/chat_service.dart';
 import '../auth_screen.dart' show AuthService, AuthScreen;
 import 'package:image_picker/image_picker.dart';
-import '../profile_screen.dart' show ProfileStorage, ProfileAvatar, UserProfile, ProfileRole, GroupPickerScreen;
+import '../profile_screen.dart' show ProfileStorage, ProfileAvatar, UserProfile, ProfileRole;
 import '../services/sim_service.dart';
 import '../theme.dart' show ThemeProvider, AppThemeMode;
 import '../widgets/chat_widgets.dart';
@@ -448,6 +448,18 @@ class _ChatListScreenState extends State<ChatListScreen>
     );
   }
 
+  // ── Иконка статуса для превью ──────────────────────────────────
+
+  Widget _statusIcon(MessageStatus status) {
+    return switch (status) {
+      MessageStatus.sending   => const Icon(Icons.access_time, size: 14, color: AppColors.subtle),
+      MessageStatus.sent      => const Icon(Icons.done, size: 16, color: AppColors.subtle),
+      MessageStatus.delivered => const Icon(Icons.done_all, size: 16, color: AppColors.subtle),
+      MessageStatus.read      => const Icon(Icons.done_all, size: 16, color: Color(0xFF4FC3F7)),
+      MessageStatus.error     => const Icon(Icons.error_outline, size: 14, color: Colors.red),
+    };
+  }
+
   // ── Общий список чатов ─────────────────────────────────────────
 
   Widget _buildChatList(List<Chat> chats) {
@@ -536,11 +548,21 @@ class _ChatListScreenState extends State<ChatListScreen>
                             ],
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            chat.lastMessage,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: AppColors.subtle),
+                          Row(
+                            children: [
+                              if (chat.messages.isNotEmpty && chat.messages.last.isMe) ...[
+                                _statusIcon(chat.messages.last.status),
+                                const SizedBox(width: 3),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  chat.lastMessage,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(color: AppColors.subtle),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -933,25 +955,6 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
     );
   }
 
-  // ─── Группа ────────────────────────────────────────────────────────────────
-
-  Future<void> _pickGroup() async {
-    final picked = await Navigator.push<String>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => GroupPickerScreen(current: _profile?.group),
-        fullscreenDialog: true,
-      ),
-    );
-    if (picked != null) {
-      if (picked.isEmpty) {
-        await _saveField(clearGroup: true, group: null);
-      } else {
-        await _saveField(group: picked);
-      }
-    }
-  }
-
   // ─── Телефон из SIM ────────────────────────────────────────────────────────
 
   Future<void> _fillFromSim() async {
@@ -1250,8 +1253,8 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
           ),
           _divider(isDark),
 
-          // Телефон
-          _editableRow(
+          // Телефон (только через SIM)
+          _readOnlyRow(
             icon: Icons.phone_outlined,
             label: 'Телефон',
             value: p.phone != null && p.phone!.isNotEmpty ? p.phone! : 'Не указан',
@@ -1273,30 +1276,16 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
                         ),
                       ))
                 : null,
-            onTap: () => _editTextField(
-              title: 'Телефон',
-              current: p.phone ?? '',
-              hint: '+7 (999) 000-00-00',
-              maxLength: 20,
-              keyboardType: TextInputType.phone,
-              onSave: (v) {
-                if (v.isEmpty) {
-                  return _saveField(clearPhone: true, phone: null);
-                }
-                return _saveField(phone: v);
-              },
-            ),
           ),
           _divider(isDark),
 
-          // Учебная группа — открывает GroupPickerScreen
-          _editableRow(
+          // Учебная группа (только чтение)
+          _readOnlyRow(
             icon: Icons.school_outlined,
             label: 'Учебная группа',
             value: p.group != null && p.group!.isNotEmpty ? p.group! : 'Не выбрана',
             isEmpty: p.group == null || p.group!.isEmpty,
             isDark: isDark,
-            onTap: _pickGroup,
           ),
         ])),
       ],
@@ -1353,6 +1342,52 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
                   color: isDark ? Colors.white24 : Colors.black26),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _readOnlyRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    required bool isDark,
+    bool isEmpty = false,
+    Widget? trailing,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 34, height: 34,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(9)),
+            child: Icon(icon, color: AppColors.primary, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 12,
+                  color: isDark ? Colors.white38 : Colors.black45)),
+              const SizedBox(height: 2),
+              Text(value,
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 15,
+                      color: isEmpty
+                          ? (isDark ? Colors.white30 : Colors.black26)
+                          : (isDark ? Colors.white : Colors.black87))),
+            ],
+          )),
+          if (trailing != null) ...[
+            const SizedBox(width: 8),
+            trailing,
+          ] else
+            Icon(Icons.lock_outline, size: 14,
+                color: isDark ? Colors.white24 : Colors.black26),
+        ],
       ),
     );
   }

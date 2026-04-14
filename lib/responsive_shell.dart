@@ -398,6 +398,16 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     }
   }
 
+  Widget _statusIcon(MessageStatus status) {
+    return switch (status) {
+      MessageStatus.sending   => const Icon(Icons.access_time, size: 13, color: AppColors.subtle),
+      MessageStatus.sent      => const Icon(Icons.done, size: 15, color: AppColors.subtle),
+      MessageStatus.delivered => const Icon(Icons.done_all, size: 15, color: AppColors.subtle),
+      MessageStatus.read      => const Icon(Icons.done_all, size: 15, color: Color(0xFF4FC3F7)),
+      MessageStatus.error     => const Icon(Icons.error_outline, size: 13, color: Colors.red),
+    };
+  }
+
   // ── Средняя панель: список чатов ───────────────────────────────────────
 
   Widget _buildChatListPanel() {
@@ -514,12 +524,22 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                               overflow: TextOverflow.ellipsis,
                             ),
                             const SizedBox(height: 2),
-                            Text(
-                              chat.lastMessage,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: AppColors.subtle, fontSize: 12),
+                            Row(
+                              children: [
+                                if (chat.messages.isNotEmpty && chat.messages.last.isMe) ...[
+                                  _statusIcon(chat.messages.last.status),
+                                  const SizedBox(width: 3),
+                                ],
+                                Expanded(
+                                  child: Text(
+                                    chat.lastMessage,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: AppColors.subtle, fontSize: 12),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'services/sim_service.dart';
 import 'app_constants.dart' show AppColors;
+import 'theme.dart' show ThemeProvider, AppThemeMode;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pubspec.yaml:
@@ -199,7 +200,7 @@ class _SplashScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      backgroundColor: Color(0xFFFF6F00),
+      backgroundColor: Color(0xFFD4765B),
       body: Center(
         child: Icon(Icons.chat_bubble_rounded, size: 64, color: Colors.white),
       ),
@@ -238,81 +239,125 @@ class _AuthScreenState extends State<AuthScreen>
   Widget build(BuildContext context) {
     final cardColor = Theme.of(context).cardColor;
     final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenW = MediaQuery.of(context).size.width;
+    final isDesktop = screenW > 600;
 
     return Scaffold(
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            children: [
-              const SizedBox(height: 48),
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFF6F00),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Icon(
-                  Icons.chat_bubble_rounded,
-                  color: Colors.white,
-                  size: 38,
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Messenger',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Войдите или создайте аккаунт',
-                style: TextStyle(fontSize: 14, color: subtleColor),
-              ),
-              const SizedBox(height: 32),
-              Container(
-                decoration: BoxDecoration(
-                  color: cardColor,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: TabBar(
-                  controller: _tabController,
-                  indicator: BoxDecoration(
-                    color: const Color(0xFFFF6F00),
-                    borderRadius: BorderRadius.circular(10),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: isDesktop ? 440.0 : double.infinity),
+            child: Column(
+              children: [
+                // ── Шапка ──────────────────────────────────────
+                Padding(
+                  padding: EdgeInsets.fromLTRB(24, isDesktop ? 24 : 48, 24, 0),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD4765B),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Icon(
+                          Icons.chat_bubble_rounded,
+                          color: Colors.white,
+                          size: 38,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Caspian Messenger',
+                        style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Войдите или создайте аккаунт',
+                        style: TextStyle(fontSize: 14, color: subtleColor),
+                      ),
+                      const SizedBox(height: 24),
+                      // ── Табы + кнопка темы ─────────────────
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: cardColor,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: TabBar(
+                                controller: _tabController,
+                                indicator: BoxDecoration(
+                                  color: const Color(0xFFD4765B),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                indicatorSize: TabBarIndicatorSize.tab,
+                                labelColor: Colors.white,
+                                unselectedLabelColor: const Color(0xFF757575),
+                                labelStyle: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                                dividerColor: Colors.transparent,
+                                tabs: const [
+                                  Tab(text: 'Вход'),
+                                  Tab(text: 'Регистрация'),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          // Переключатель темы
+                          GestureDetector(
+                            onTap: () {
+                              final tp = ThemeProvider.of(context);
+                              final next = isDark ? AppThemeMode.light : AppThemeMode.dark;
+                              tp.setMode(next);
+                            },
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: cardColor,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
+                                color: const Color(0xFFD4765B),
+                                size: 22,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  labelColor: Colors.white,
-                  unselectedLabelColor: const Color(0xFF757575),
-                  labelStyle: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
+                ),
+                const SizedBox(height: 16),
+                // ── Форма (скроллируется) ──────────────────────
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+                        child: _LoginForm(
+                          tabController: _tabController,
+                          onLoginSuccess: widget.onLoginSuccess ?? () {},
+                        ),
+                      ),
+                      SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+                        child: _RegisterForm(tabController: _tabController),
+                      ),
+                    ],
                   ),
-                  dividerColor: Colors.transparent,
-                  tabs: const [
-                    Tab(text: 'Вход'),
-                    Tab(text: 'Регистрация'),
-                  ],
                 ),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                height: 640,
-                child: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _LoginForm(
-                      tabController: _tabController,
-                      onLoginSuccess: widget.onLoginSuccess ?? () {},
-                    ),
-                    _RegisterForm(tabController: _tabController),
-                  ],
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -396,7 +441,7 @@ class _LoginFormState extends State<_LoginForm> {
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             ...sims.map((sim) => ListTile(
-              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFFF6F00)),
+              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFD4765B)),
               title: Text(sim.slotLabel),
               subtitle: Text(sim.displayInfo),
               trailing: sim.phoneNumber != null
@@ -512,7 +557,7 @@ class _LoginFormState extends State<_LoginForm> {
             onPressed: () => widget.tabController.animateTo(1),
             child: const Text(
               'Нет аккаунта? Зарегистрироваться',
-              style: TextStyle(color: Color(0xFFFF6F00)),
+              style: TextStyle(color: Color(0xFFD4765B)),
             ),
           ),
         ],
@@ -561,7 +606,10 @@ class _RegisterFormState extends State<_RegisterForm> {
   }
 
   // ── Чтение номера из SIM ─────────────────────────────────────────────────
-  Future<void> _fillFromSim() async {
+
+  /// Заполняет [target] контроллер номером из SIM-карты.
+  Future<void> _fillFromSim({TextEditingController? target}) async {
+    final ctrl = target ?? _phoneController;
     setState(() => _simLoading = true);
     final result = await SimService.fetchSimCards();
     if (!mounted) return;
@@ -587,25 +635,23 @@ class _RegisterFormState extends State<_RegisterForm> {
       case SimResult.success:
         final sims = result.simCards;
         if (sims.length == 1) {
-          _applySimCard(sims.first);
+          _applySimCard(sims.first, ctrl);
         } else {
-          // Два слота — показываем диалог выбора
-          _showSimPickerDialog(sims);
+          _showSimPickerDialog(sims, ctrl);
         }
     }
   }
 
-  void _applySimCard(SimCard sim) {
+  void _applySimCard(SimCard sim, TextEditingController ctrl) {
     if (sim.phoneNumber?.isNotEmpty == true) {
-      _phoneController.text = sim.phoneNumber!;
+      ctrl.text = sim.phoneNumber!;
       _showSimSnack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
     } else {
-      // iOS: номер недоступен через публичный API — подсказываем оператора
       _showSimSnack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
     }
   }
 
-  void _showSimPickerDialog(List<SimCard> sims) {
+  void _showSimPickerDialog(List<SimCard> sims, TextEditingController ctrl) {
     showModalBottomSheet<void>(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -622,7 +668,7 @@ class _RegisterFormState extends State<_RegisterForm> {
             ),
             const SizedBox(height: 8),
             ...sims.map((sim) => ListTile(
-              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFFF6F00)),
+              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFD4765B)),
               title: Text(sim.slotLabel),
               subtitle: Text(sim.displayInfo),
               trailing: sim.phoneNumber != null
@@ -631,7 +677,7 @@ class _RegisterFormState extends State<_RegisterForm> {
                       style: TextStyle(color: Colors.grey, fontSize: 12)),
               onTap: () {
                 Navigator.pop(context);
-                _applySimCard(sim);
+                _applySimCard(sim, ctrl);
               },
             )),
             const SizedBox(height: 8),
@@ -653,14 +699,15 @@ class _RegisterFormState extends State<_RegisterForm> {
   Future<void> _submit() async {
     setState(() => _groupTouched = true);
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedGroup == null) return; // группа обязательна
+    // Группа обязательна только для студентов
+    if (_selectedRole == 'student' && _selectedGroup == null) return;
     setState(() => _isLoading = true);
 
     await AuthService.saveRegistration(
       name: _nameController.text.trim(),
       login: _loginController.text.trim(),
       password: _passwordController.text,
-      group: _selectedGroup!,
+      group: _selectedGroup ?? '',
       phone: _phoneController.text.trim(),
       role: _selectedRole,
     );
@@ -674,7 +721,7 @@ class _RegisterFormState extends State<_RegisterForm> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Аккаунт создан! Теперь войдите.'),
-        backgroundColor: Color(0xFFFF6F00),
+        backgroundColor: Color(0xFFD4765B),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -689,7 +736,10 @@ class _RegisterFormState extends State<_RegisterForm> {
           // ── Выбор роли ─────────────────────────────────────────
           _AuthRoleSelector(
             value: _selectedRole,
-            onChanged: (r) => setState(() => _selectedRole = r),
+            onChanged: (r) => setState(() {
+              _selectedRole = r;
+              if (r == 'teacher') _selectedGroup = null;
+            }),
           ),
           const SizedBox(height: 12),
           _AuthField(
@@ -699,18 +749,21 @@ class _RegisterFormState extends State<_RegisterForm> {
             validator: (v) =>
                 (v == null || v.trim().isEmpty) ? 'Введите имя' : null,
           ),
-          const SizedBox(height: 12),
-          _GroupSelectField(
-            value: _selectedGroup,
-            showError: _groupTouched && _selectedGroup == null,
-            onChanged: (g) => setState(() => _selectedGroup = g),
-          ),
+          // Учебная группа — только для студентов
+          if (_selectedRole == 'student') ...[
+            const SizedBox(height: 12),
+            _GroupSelectField(
+              value: _selectedGroup,
+              showError: _groupTouched && _selectedGroup == null,
+              onChanged: (g) => setState(() => _selectedGroup = g),
+            ),
+          ],
           // Поле телефона — только на Android (через SIM-карту)
           if (SimService.isSupported) ...[
             const SizedBox(height: 12),
             _PhoneField(
               controller: _phoneController,
-              onSimTap: _fillFromSim,
+              onSimTap: () => _fillFromSim(target: _phoneController),
               simLoading: _simLoading,
             ),
           ],
@@ -728,7 +781,7 @@ class _RegisterFormState extends State<_RegisterForm> {
           if (_usePhone && SimService.isSupported)
             _PhoneField(
               controller: _loginController,
-              onSimTap: _fillFromSim,
+              onSimTap: () => _fillFromSim(target: _loginController),
               simLoading: _simLoading,
             )
           else
@@ -833,10 +886,10 @@ class _ToggleChip extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFFF6F00) : cardColor,
+          color: selected ? const Color(0xFFD4765B) : cardColor,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: selected ? const Color(0xFFFF6F00) : borderColor,
+            color: selected ? const Color(0xFFD4765B) : borderColor,
           ),
         ),
         child: Row(
@@ -942,7 +995,7 @@ InputDecoration _inputDecoration(
   return InputDecoration(
     labelText: label,
     hintText: hintText,
-    prefixIcon: Icon(icon, color: const Color(0xFFFF6F00)),
+    prefixIcon: Icon(icon, color: const Color(0xFFD4765B)),
     suffixIcon: suffixIcon,
     filled: true,
     fillColor: fillColor,
@@ -956,7 +1009,7 @@ InputDecoration _inputDecoration(
     ),
     focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: Color(0xFFFF6F00), width: 1.5),
+      borderSide: const BorderSide(color: Color(0xFFD4765B), width: 1.5),
     ),
     errorBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
@@ -1040,9 +1093,9 @@ class _AuthButton extends StatelessWidget {
       child: FilledButton(
         onPressed: isLoading ? null : onPressed,
         style: FilledButton.styleFrom(
-          backgroundColor: const Color(0xFFFF6F00),
+          backgroundColor: const Color(0xFFD4765B),
           disabledBackgroundColor:
-              const Color(0xFFFF6F00).withValues(alpha: 0.6),
+              const Color(0xFFD4765B).withValues(alpha: 0.6),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
@@ -1115,7 +1168,7 @@ class _GroupSelectField extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.school_outlined, color: Color(0xFFFF6F00), size: 22),
+                const Icon(Icons.school_outlined, color: Color(0xFFD4765B), size: 22),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
@@ -1237,7 +1290,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
                       return ListTile(
                         leading: CircleAvatar(
                           backgroundColor: isSelected
-                              ? const Color(0xFFFF6F00)
+                              ? const Color(0xFFD4765B)
                               : Theme.of(context).scaffoldBackgroundColor,
                           child: Text(
                             group.split('-').first,
@@ -1260,7 +1313,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
                         ),
                         trailing: isSelected
                             ? const Icon(Icons.check_circle,
-                                color: Color(0xFFFF6F00))
+                                color: Color(0xFFD4765B))
                             : null,
                         onTap: () => Navigator.pop(context, group),
                       );
@@ -1325,10 +1378,10 @@ class _AuthRoleChip extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFFFF6F00) : Colors.transparent,
+            color: selected ? const Color(0xFFD4765B) : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: selected ? const Color(0xFFFF6F00) : const Color(0xFFE0E0E0),
+              color: selected ? const Color(0xFFD4765B) : const Color(0xFFE0E0E0),
             ),
           ),
           child: Row(
