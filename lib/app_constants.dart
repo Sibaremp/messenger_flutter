@@ -37,6 +37,27 @@ String formatTime(DateTime time) {
   return '$h:$m';
 }
 
+/// Заголовок группы сообщений (Telegram-style):
+/// Сегодня / Вчера / День недели / ДД.ММ / ДД.ММ.ГГГГ
+String formatMessageGroupDate(DateTime date) {
+  final now      = DateTime.now();
+  final today    = DateTime(now.year, now.month, now.day);
+  final yesterday = today.subtract(const Duration(days: 1));
+  final d        = DateTime(date.year, date.month, date.day);
+
+  if (d == today)     return 'Сегодня';
+  if (d == yesterday) return 'Вчера';
+  // Текущая неделя (менее 7 дней назад)
+  if (today.difference(d).inDays < 7) {
+    const days = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье'];
+    return days[date.weekday - 1];
+  }
+  final dd = date.day.toString().padLeft(2, '0');
+  final mm = date.month.toString().padLeft(2, '0');
+  if (d.year == now.year) return '$dd.$mm';
+  return '$dd.$mm.${date.year}';
+}
+
 /// Умная метка времени для списка чатов: сегодня → HH:mm, вчера → "Вчера",
 /// в течение 7 дней → сокращённый день недели, старше → "d MMM".
 String formatChatTime(DateTime time) {

@@ -1,8 +1,11 @@
 import 'dart:io';
+import 'dart:ui';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../app_constants.dart';
-import '../auth_screen.dart' show AuthService;
+import '../services/auth_service.dart' as svc;
+import '../services/api_config.dart' show ApiConfig;
 
 // ─── Экран профиля собеседника ────────────────────────────────────────────────
 
@@ -16,6 +19,7 @@ class ContactProfileScreen extends StatefulWidget {
   /// Если true — встроен в панель (desktop).
   final bool embedded;
   final VoidCallback? onBack;
+  final svc.AuthService? auth;
 
   const ContactProfileScreen({
     super.key,
@@ -26,6 +30,7 @@ class ContactProfileScreen extends StatefulWidget {
     this.group,
     this.embedded = false,
     this.onBack,
+    this.auth,
   });
 
   @override
@@ -38,17 +43,32 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.phone?.isNotEmpty == true) _checkPhone();
+    if (widget.phone?.isNotEmpty == true && widget.auth != null) _checkPhone();
   }
 
   Future<void> _checkPhone() async {
-    final phones = await AuthService.getRegisteredPhones();
-    final normalized = AuthService.normalizePhone(widget.phone!);
-    if (mounted) setState(() => _phoneInApp = phones.contains(normalized));
+    try {
+      final contacts = await widget.auth!.loadContacts();
+      final normalized = _normalizePhone(widget.phone!);
+      final phones = contacts
+          .map((c) => c['phone'] as String?)
+          .where((p) => p != null)
+          .map((p) => _normalizePhone(p!))
+          .toSet();
+      if (mounted) setState(() => _phoneInApp = phones.contains(normalized));
+    } catch (_) {}
   }
 
-  bool get _hasPhoto =>
-      widget.avatarPath != null && File(widget.avatarPath!).existsSync();
+  static String _normalizePhone(String phone) =>
+      phone.replaceAll(RegExp(r'[^\d+]'), '');
+
+  bool get _hasPhoto {
+    final p = widget.avatarPath;
+    if (p == null || p.isEmpty) return false;
+    if (ApiConfig.isServerMediaPath(p)) return true;
+    if (kIsWeb) return false;
+    return File(p).existsSync();
+  }
 
   String get _heroTag => 'contact_photo_${widget.name}';
 
@@ -111,10 +131,60 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                           child: Stack(
                             fit: StackFit.expand,
                             children: [
-                              Image.file(
-                                File(widget.avatarPath!),
-                                fit: BoxFit.cover,
+                              // Размытый фон (аватар растянут и заблюрен)
+                              ApiConfig.isServerMediaPath(widget.avatarPath)
+                                  ? Image.network(
+                                      ApiConfig.resolveMediaUrl(
+                                          widget.avatarPath)!,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) =>
+                                          Container(color: Colors.black54),
+                                    )
+                                  : Image.file(
+                                      File(widget.avatarPath!),
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) =>
+                                          Container(color: Colors.black54),
+                                    ),
+                              ClipRect(
+                                child: BackdropFilter(
+                                  filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+                                  child: Container(
+                                    color: Colors.black.withValues(alpha: 0.3),
+                                  ),
+                                ),
                               ),
+                              // Чёткий аватар по центру
+                              Center(
+                                child: Container(
+                                  width: 120,
+                                  height: 120,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white24, width: 2),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.3),
+                                        blurRadius: 16,
+                                      ),
+                                    ],
+                                  ),
+                                  child: ClipOval(
+                                    child: ApiConfig.isServerMediaPath(widget.avatarPath)
+                                        ? Image.network(
+                                            ApiConfig.resolveMediaUrl(widget.avatarPath)!,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (_, __, ___) =>
+                                                const Icon(Icons.person, color: Colors.white54, size: 48),
+                                          )
+                                        : Image.file(
+                                            File(widget.avatarPath!),
+                                            fit: BoxFit.cover,
+                                          ),
+                                  ),
+                                ),
+                              ),
+                              // Градиент внизу для текста
                               const DecoratedBox(
                                 decoration: BoxDecoration(
                                   gradient: LinearGradient(
@@ -124,7 +194,7 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                                       Colors.transparent,
                                       Colors.black54,
                                     ],
-                                    stops: [0.4, 1.0],
+                                    stops: [0.5, 1.0],
                                   ),
                                 ),
                               ),
@@ -180,7 +250,17 @@ class _ContactProfileScreenState extends State<ContactProfileScreen> {
                         icon: Icons.chat_outlined,
                         label: 'Написать сообщение',
                         isDark: isDark,
-                        onTap: () => Navigator.pop(context),
+                        // В embedded-режиме (desktop split-layout) нельзя делать
+                        // Navigator.pop — это схлопнет весь внешний роут и
+                        // появится чёрный экран. Закрываем панель через onBack,
+                        // возвращая пользователя в открытый чат.
+                        onTap: () {
+                          if (widget.embedded) {
+                            widget.onBack?.call();
+                          } else {
+                            Navigator.pop(context);
+                          }
+                        },
                       ),
                       _divider(isDark),
                       _ActionRow(
@@ -505,15 +585,25 @@ class _FullScreenPhoto extends StatelessWidget {
               maxScale: 6.0,
               child: Hero(
                 tag: heroTag,
-                child: Image.file(
-                  File(path),
-                  fit: BoxFit.contain,
-                  errorBuilder: (ctx, err, st) => const Icon(
-                    Icons.broken_image,
-                    color: Colors.white38,
-                    size: 64,
-                  ),
-                ),
+                child: ApiConfig.isServerMediaPath(path)
+                    ? Image.network(
+                        ApiConfig.resolveMediaUrl(path)!,
+                        fit: BoxFit.contain,
+                        errorBuilder: (ctx, err, st) => const Icon(
+                          Icons.broken_image,
+                          color: Colors.white38,
+                          size: 64,
+                        ),
+                      )
+                    : Image.file(
+                        File(path),
+                        fit: BoxFit.contain,
+                        errorBuilder: (ctx, err, st) => const Icon(
+                          Icons.broken_image,
+                          color: Colors.white38,
+                          size: 64,
+                        ),
+                      ),
               ),
             ),
           ),

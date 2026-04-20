@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
+import '../services/auth_service.dart' as svc;
 import '../widgets/chat_widgets.dart';
 import 'chat_screen.dart';
 
@@ -11,6 +12,8 @@ class SearchScreen extends StatefulWidget {
   final ChatService service;
   final List<AppContact> contacts;
   final ValueChanged<Chat>? onChatSelected;
+  /// AuthService для передачи текущего пользователя в ChatScreen.
+  final svc.AuthService? auth;
 
   /// Если true — экран встроен в панель (desktop), не открывает чат через Navigator.
   final bool embedded;
@@ -20,6 +23,7 @@ class SearchScreen extends StatefulWidget {
     required this.service,
     this.contacts = const [],
     this.onChatSelected,
+    this.auth,
     this.embedded = false,
   });
 
@@ -104,6 +108,7 @@ class _SearchScreenState extends State<SearchScreen>
             service: widget.service,
             onChatUpdated: (_) {},
             contacts: widget.contacts,
+            auth: widget.auth,
           ),
         ),
       );

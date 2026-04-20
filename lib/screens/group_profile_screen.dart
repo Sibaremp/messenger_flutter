@@ -1,21 +1,57 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models.dart';
 import '../app_constants.dart';
+import '../services/api_config.dart' show ApiConfig;
 
 // ─── Экран профиля группы / сообщества ───────────────────────────────────────
 
-class GroupProfileScreen extends StatelessWidget {
+class GroupProfileScreen extends StatefulWidget {
   final Chat chat;
   /// Если true — встроен в панель (desktop).
   final bool embedded;
   final VoidCallback? onBack;
+  /// Имя текущего авторизованного пользователя — нужно для определения его роли в группе.
+  final String? currentUserName;
 
-  const GroupProfileScreen({super.key, required this.chat, this.embedded = false, this.onBack});
+  const GroupProfileScreen({
+    super.key,
+    required this.chat,
+    this.embedded = false,
+    this.onBack,
+    this.currentUserName,
+  });
 
-  bool get _hasPhoto =>
-      chat.avatarPath != null && File(chat.avatarPath!).existsSync();
+  @override
+  State<GroupProfileScreen> createState() => _GroupProfileScreenState();
+}
+
+class _GroupProfileScreenState extends State<GroupProfileScreen> {
+  bool _imageError = false;
+
+  Chat get chat => widget.chat;
+  bool get embedded => widget.embedded;
+  VoidCallback? get onBack => widget.onBack;
+  String? get currentUserName => widget.currentUserName;
+
+  @override
+  void didUpdateWidget(GroupProfileScreen old) {
+    super.didUpdateWidget(old);
+    if (old.chat.avatarPath != widget.chat.avatarPath) {
+      setState(() => _imageError = false);
+    }
+  }
+
+  bool get _hasPhoto {
+    if (_imageError) return false;
+    final p = chat.avatarPath;
+    if (p == null || p.isEmpty) return false;
+    if (ApiConfig.isServerMediaPath(p)) return true;
+    if (kIsWeb) return false;
+    return File(p).existsSync();
+  }
 
   String get _heroTag => 'group_photo_${chat.id}';
 
@@ -36,33 +72,48 @@ class GroupProfileScreen extends StatelessWidget {
     return _memberColors[hash % _memberColors.length];
   }
 
-  /// Полный список участников, включая текущего пользователя («Я»).
+  /// Полный список участников.
+  /// Запись текущего пользователя заменяется на «Вы» с правильной ролью.
   List<ChatMember> get _allMembers {
-    final list = <ChatMember>[];
+    final me = currentUserName;
 
     // Определяем роль текущего пользователя
-    final myRole = (chat.adminName == null || chat.adminName == 'Я')
-        ? MemberRole.creator
-        : MemberRole.member;
-
-    // Добавляем текущего пользователя первым (или после создателя)
-    final me = ChatMember(name: 'Вы', role: myRole);
-
-    // Если «Я» — создатель, ставим первым
-    if (myRole == MemberRole.creator) {
-      list.add(me);
-      list.addAll(chat.members);
-    } else {
-      // Сначала создатели/админы, потом «Вы», потом остальные
-      final creators =
-          chat.members.where((m) => m.role != MemberRole.member).toList();
-      final others =
-          chat.members.where((m) => m.role == MemberRole.member).toList();
-      list.addAll(creators);
-      list.add(me);
-      list.addAll(others);
+    MemberRole myRole = MemberRole.member;
+    if (me != null && me.isNotEmpty) {
+      if (chat.isCreatorOrAdmin(me)) {
+        myRole = MemberRole.creator;
+      } else if (chat.members.any((m) => m.name == me)) {
+        // Берём роль из списка участников (вдруг там admin)
+        final myMember = chat.members.firstWhere((m) => m.name == me);
+        myRole = myMember.role;
+      }
     }
-    return list;
+
+    // Список остальных (всех, кроме текущего пользователя)
+    final others = me != null && me.isNotEmpty
+        ? chat.members.where((m) => m.name != me).toList()
+        : List<ChatMember>.from(chat.members);
+
+    // Сортируем: creator → admin → member
+    others.sort((a, b) {
+      const order = {
+        MemberRole.creator: 0,
+        MemberRole.admin: 1,
+        MemberRole.member: 2,
+      };
+      return (order[a.role] ?? 2).compareTo(order[b.role] ?? 2);
+    });
+
+    final meEntry = ChatMember(name: 'Вы', role: myRole);
+
+    if (myRole == MemberRole.creator || myRole == MemberRole.admin) {
+      return [meEntry, ...others];
+    } else {
+      // Текущий пользователь — обычный участник: ставим после создателей/админов
+      final leaders = others.where((m) => m.role != MemberRole.member).toList();
+      final rest = others.where((m) => m.role == MemberRole.member).toList();
+      return [...leaders, meEntry, ...rest];
+    }
   }
 
   void _openFullPhoto(BuildContext context) {
@@ -76,6 +127,57 @@ class GroupProfileScreen extends StatelessWidget {
             _FullScreenPhoto(path: chat.avatarPath!, heroTag: _heroTag),
         transitionsBuilder: (ctx, anim, a, child) =>
             FadeTransition(opacity: anim, child: child),
+      ),
+    );
+  }
+
+  /// Инициалы для плейсхолдера шапки: первые буквы двух слов.
+  String get _initials {
+    final words = chat.name
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+    if (words.length >= 2) {
+      return '${words[0][0]}${words[1][0]}'.toUpperCase();
+    }
+    return chat.name.isNotEmpty ? chat.name[0].toUpperCase() : '?';
+  }
+
+  /// Градиентный плейсхолдер с инициалами (когда нет аватара или ошибка загрузки).
+  Widget _buildPlaceholder(bool isCommunity) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            AppColors.primary,
+            AppColors.primary.withValues(alpha: 0.85),
+            const Color(0xFF8B4000),
+          ],
+          stops: const [0.0, 0.6, 1.0],
+        ),
+      ),
+      child: Center(
+        child: Container(
+          width: 96,
+          height: 96,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.2),
+          ),
+          child: Center(
+            child: Text(
+              _initials,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 38,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -143,10 +245,35 @@ class GroupProfileScreen extends StatelessWidget {
                           child: Stack(
                             fit: StackFit.expand,
                             children: [
-                              Image.file(
-                                File(chat.avatarPath!),
-                                fit: BoxFit.cover,
-                              ),
+                              ApiConfig.isServerMediaPath(chat.avatarPath)
+                                  ? Image.network(
+                                      ApiConfig.resolveMediaUrl(
+                                          chat.avatarPath)!,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (ctx, e, s) {
+                                        // При ошибке загрузки — переключаемся на плейсхолдер
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                          if (mounted) {
+                                            setState(() => _imageError = true);
+                                          }
+                                        });
+                                        return _buildPlaceholder(isCommunity);
+                                      },
+                                    )
+                                  : Image.file(
+                                      File(chat.avatarPath!),
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (ctx, e, s) {
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                          if (mounted) {
+                                            setState(() => _imageError = true);
+                                          }
+                                        });
+                                        return _buildPlaceholder(isCommunity);
+                                      },
+                                    ),
                               // Градиент снизу для читаемости текста
                               const DecoratedBox(
                                 decoration: BoxDecoration(
@@ -165,38 +292,7 @@ class GroupProfileScreen extends StatelessWidget {
                           ),
                         ),
                       )
-                    : Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              AppColors.primary,
-                              AppColors.primary.withValues(alpha: 0.85),
-                              const Color(0xFF8B4000),
-                            ],
-                            stops: const [0.0, 0.6, 1.0],
-                          ),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              width: 88,
-                              height: 88,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.white.withValues(alpha: 0.2),
-                              ),
-                              child: Icon(
-                                isCommunity ? Icons.campaign : Icons.group,
-                                size: 48,
-                                color: Colors.white.withValues(alpha: 0.8),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                    : _buildPlaceholder(isCommunity),
               ),
             ),
 
@@ -534,15 +630,25 @@ class _FullScreenPhoto extends StatelessWidget {
               maxScale: 6.0,
               child: Hero(
                 tag: heroTag,
-                child: Image.file(
-                  File(path),
-                  fit: BoxFit.contain,
-                  errorBuilder: (ctx, err, st) => const Icon(
-                    Icons.broken_image,
-                    color: Colors.white38,
-                    size: 64,
-                  ),
-                ),
+                child: ApiConfig.isServerMediaPath(path)
+                    ? Image.network(
+                        ApiConfig.resolveMediaUrl(path)!,
+                        fit: BoxFit.contain,
+                        errorBuilder: (ctx, err, st) => const Icon(
+                          Icons.broken_image,
+                          color: Colors.white38,
+                          size: 64,
+                        ),
+                      )
+                    : Image.file(
+                        File(path),
+                        fit: BoxFit.contain,
+                        errorBuilder: (ctx, err, st) => const Icon(
+                          Icons.broken_image,
+                          color: Colors.white38,
+                          size: 64,
+                        ),
+                      ),
               ),
             ),
           ),

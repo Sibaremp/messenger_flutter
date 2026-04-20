@@ -20,6 +20,16 @@ class AppNotification {
     this.avatarPath,
     this.isRead = false,
   });
+
+  AppNotification copyWith({bool? isRead}) => AppNotification(
+        id: id,
+        senderName: senderName,
+        senderRole: senderRole,
+        message: message,
+        time: time,
+        avatarPath: avatarPath,
+        isRead: isRead ?? this.isRead,
+      );
 }
 
 /// Панель уведомлений для desktop-режима.
@@ -33,23 +43,8 @@ class NotificationsPanel extends StatefulWidget {
 class _NotificationsPanelState extends State<NotificationsPanel> {
   int _selectedFilter = 0; // 0 = все, 1 = за последние сутки
 
-  // Демо-данные
-  final List<AppNotification> _notifications = [
-    AppNotification(
-      id: '1',
-      senderName: 'Профессор Иванов А. С.',
-      senderRole: 'Преподаватель кафедры математики • Прикладная информатика',
-      message: '+3 012 345 2345',
-      time: DateTime.now().subtract(const Duration(hours: 2)),
-    ),
-    AppNotification(
-      id: '2',
-      senderName: 'Марина Филипова',
-      senderRole: 'Заведующая отделением «Техническое направление ОНО»',
-      message: '«Студенты, имеющие долги, не будут допущены к написанию дипломной работы»',
-      time: DateTime.now().subtract(const Duration(hours: 5)),
-    ),
-  ];
+  // Уведомления загружаются с сервера; пока список пуст.
+  final List<AppNotification> _notifications = [];
 
   List<AppNotification> get _filtered {
     if (_selectedFilter == 1) {
@@ -57,6 +52,17 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
       return _notifications.where((n) => n.time.isAfter(cutoff)).toList();
     }
     return _notifications;
+  }
+
+  void _markRead(String id) {
+    setState(() {
+      _notifications.removeWhere((n) => n.id == id);
+    });
+  }
+
+  void _markAllRead() {
+    if (_notifications.isEmpty) return;
+    setState(() => _notifications.clear());
   }
 
   @override
@@ -107,6 +113,19 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
                 selected: _selectedFilter == 1,
                 onTap: () => setState(() => _selectedFilter = 1),
               ),
+              const Spacer(),
+              if (_notifications.isNotEmpty)
+                TextButton.icon(
+                  onPressed: _markAllRead,
+                  icon: const Icon(Icons.done_all, size: 16),
+                  label: const Text('Прочитать все',
+                      style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: Size.zero,
+                  ),
+                ),
             ],
           ),
         ),
@@ -139,7 +158,10 @@ class _NotificationsPanelState extends State<NotificationsPanel> {
                   ),
                   itemBuilder: (context, index) {
                     final n = items[index];
-                    return _NotificationCard(notification: n);
+                    return _NotificationCard(
+                      notification: n,
+                      onMarkRead: () => _markRead(n.id),
+                    );
                   },
                 ),
         ),
@@ -193,8 +215,12 @@ class _FilterChip extends StatelessWidget {
 
 class _NotificationCard extends StatelessWidget {
   final AppNotification notification;
+  final VoidCallback onMarkRead;
 
-  const _NotificationCard({required this.notification});
+  const _NotificationCard({
+    required this.notification,
+    required this.onMarkRead,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -246,7 +272,7 @@ class _NotificationCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             OutlinedButton(
-              onPressed: () {},
+              onPressed: onMarkRead,
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: AppColors.primary),
                 foregroundColor: AppColors.primary,

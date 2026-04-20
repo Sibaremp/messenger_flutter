@@ -1,44 +1,36 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:media_kit/media_kit.dart';
 import 'theme.dart';
 import 'services/chat_service.dart';
-import 'services/auth_service.dart' as svc;
+import 'services/auth_service.dart';
 import 'services/api_chat_service.dart';
 import 'responsive_shell.dart';
 import 'auth_screen.dart';
-
-/// Режим работы приложения: локальный (in-memory) или серверный (REST + SignalR).
-enum _BackendMode { local, api }
-
-const _mode = _BackendMode.api;
 
 /// Точка входа: оборачивает приложение в [ThemeProvider], чтобы состояние темы
 /// было доступно до первого кадра, затем монтирует [MyApp] с выбранным бэкендом.
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
 
-  final ChatService service;
-  switch (_mode) {
-    case _BackendMode.local:
-      service = LocalChatService();
-    case _BackendMode.api:
-      final auth = svc.AuthService();
-      await auth.tryRestoreSession();
-      service = ApiChatService(auth);
-  }
+  final auth = AuthService();
+  await auth.tryRestoreSession();
+  final ChatService service = ApiChatService(auth);
 
-  runApp(ThemeProvider(child: MyApp(service: service)));
+  runApp(ThemeProvider(child: MyApp(service: service, auth: auth)));
 }
 
 /// Корневой виджет: настраивает [MaterialApp] с темой, локализацией и авторизационным шлюзом.
 class MyApp extends StatelessWidget {
   final ChatService service;
-  const MyApp({super.key, required this.service});
+  final AuthService auth;
+  const MyApp({super.key, required this.service, required this.auth});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Messenger',
+      title: 'Caspian Messenger',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeProvider.of(context).themeMode,
       theme: AppTheme.light,
@@ -53,7 +45,10 @@ class MyApp extends StatelessWidget {
         Locale('en', 'US'),
         Locale('kk', 'KZ'),
       ],
-      home: AuthGate(homeScreen: ResponsiveShell(service: service)),
+      home: AuthGate(
+        auth: auth,
+        homeScreen: ResponsiveShell(service: service, auth: auth),
+      ),
     );
   }
 }

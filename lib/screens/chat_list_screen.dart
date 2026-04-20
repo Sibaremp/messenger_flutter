@@ -5,20 +5,24 @@ import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
-import '../auth_screen.dart' show AuthService, AuthScreen;
+import '../services/auth_service.dart' as svc;
+import '../services/api_config.dart' show ApiConfig;
+import '../auth_screen.dart' show AuthScreen;
 import 'package:image_picker/image_picker.dart';
-import '../profile_screen.dart' show ProfileStorage, ProfileAvatar, UserProfile, ProfileRole;
+import '../profile_screen.dart' show ProfileAvatar, UserProfile, ProfileRole;
 import '../services/sim_service.dart';
 import '../theme.dart' show ThemeProvider, AppThemeMode;
 import '../widgets/chat_widgets.dart';
 import 'chat_screen.dart';
 import 'search_screen.dart';
+import 'devices_screen.dart';
 
 /// Главный мобильный экран с BottomNavigationBar (4 вкладки).
 /// Используется при ширине экрана < [AppSizes.desktopBreakpoint].
 class ChatListScreen extends StatefulWidget {
   final ChatService service;
-  const ChatListScreen({super.key, required this.service});
+  final svc.AuthService auth;
+  const ChatListScreen({super.key, required this.service, required this.auth});
 
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
@@ -38,19 +42,15 @@ class _ChatListScreenState extends State<ChatListScreen>
   List<Chat> _chats = [];
   late StreamSubscription<ChatEvent> _eventSub;
 
-  final List<AppContact> _contacts = [
-    // Студенты
-    const AppContact(name: 'Алексей', group: 'ИС-22'),
-    const AppContact(name: 'Мария', group: 'ПИ-21'),
-    const AppContact(name: 'Иван', group: 'КБ-23'),
-    const AppContact(name: 'Екатерина', group: 'ВТ-21'),
-    const AppContact(name: 'Дмитрий', group: 'ИС-21'),
-    // Преподаватели
-    const AppContact(name: 'Проф. Петров', group: 'Физика', isTeacher: true),
-    const AppContact(name: 'Доц. Сулейменова', group: 'История', isTeacher: true),
-    const AppContact(name: 'Ст. преп. Ким', group: 'Математика', isTeacher: true),
-    const AppContact(name: 'Проф. Жумабаев', group: 'Информатика', isTeacher: true),
-  ];
+  List<AppContact> _contacts = [];
+
+  // ── Уведомления (упоминания) ─────────────────────────────────
+  /// Накопленные уведомления (упоминания текущего пользователя).
+  final List<_AppNotification> _notifications = [];
+
+  /// Количество непрочитанных уведомлений — отображается бейджем.
+  int get _unreadNotifications =>
+      _notifications.where((n) => !n.read).length;
 
   @override
   void initState() {
@@ -62,8 +62,46 @@ class _ChatListScreenState extends State<ChatListScreen>
     _chatTabCtrl.addListener(() => setState(() {}));
     _loadChats();
     _loadAvatar();
-    _eventSub = widget.service.events.listen((_) {
-      if (mounted) _loadChats();
+    _loadContacts();
+    _eventSub = widget.service.events.listen((event) {
+      if (!mounted) return;
+      _loadChats();
+      // Принудительный logout, если текущий сеанс завершён удалённо.
+      if (event is SessionTerminated && event.isCurrent) {
+        _logout();
+      }
+      // Уведомления: упоминания и ответы на сообщения текущего пользователя.
+      if (event is MessageReceived && !event.message.isMe) {
+        final myName = widget.auth.currentUser?.name ?? '';
+        final msg = event.message;
+
+        // @упоминание (@ник или @all)
+        final mentioned = msg.mentions
+            .any((m) => m.username == myName || m.userId == 'all');
+        if (mentioned) {
+          setState(() {
+            _notifications.insert(0, _AppNotification(
+              type:       _NotifType.mention,
+              senderName: msg.senderName ?? 'Участник',
+              message:    msg.text,
+              time:       msg.time,
+            ));
+          });
+        }
+
+        // Ответ на моё сообщение
+        final replyTo = msg.replyTo;
+        if (!mentioned && replyTo != null && replyTo.senderName == myName) {
+          setState(() {
+            _notifications.insert(0, _AppNotification(
+              type:       _NotifType.reply,
+              senderName: msg.senderName ?? 'Участник',
+              message:    msg.text,
+              time:       msg.time,
+            ));
+          });
+        }
+      }
     });
   }
 
@@ -81,8 +119,20 @@ class _ChatListScreenState extends State<ChatListScreen>
   }
 
   Future<void> _loadAvatar() async {
-    final profile = await ProfileStorage.loadProfile();
-    if (mounted) setState(() => _myAvatarPath = profile.avatarPath);
+    final user = widget.auth.currentUser;
+    if (user?.avatarUrl != null) {
+      if (mounted) setState(() => _myAvatarPath = user!.avatarUrl);
+    }
+  }
+
+  Future<void> _loadContacts() async {
+    try {
+      final raw = await widget.auth.loadContacts();
+      if (!mounted) return;
+      setState(() {
+        _contacts = raw.map((j) => AppContact.fromJson(j)).toList();
+      });
+    } catch (_) {}
   }
 
   // ── Сортированные и фильтрованные списки ───────────────────────
@@ -117,8 +167,9 @@ class _ChatListScreenState extends State<ChatListScreen>
   bool get _showFab {
     switch (_bottomIndex) {
       case 0: // Академический
-        // Личные → новый чат, Группы → нет FAB (студенты не создают группы)
-        return _academicTabCtrl.index == 0;
+        // Личные → новый чат; Группы → только преподаватели
+        if (_academicTabCtrl.index == 0) return true;
+        return widget.auth.currentUser?.isTeacher == true;
       case 1: // Общение
         // Личные → новый чат, Группы → создать группу/сообщество
         return true;
@@ -129,8 +180,13 @@ class _ChatListScreenState extends State<ChatListScreen>
 
   void _onFabPressed() {
     switch (_bottomIndex) {
-      case 0: // Академический / Личные
-        _openNewDirectChat();
+      case 0: // Академический
+        if (_academicTabCtrl.index == 0) {
+          _openNewDirectChat();
+        } else {
+          // Только преподаватель сюда попадёт (из _showFab)
+          _showGroupCreateOptions(isAcademic: true);
+        }
       case 1: // Общение
         if (_chatTabCtrl.index == 0) {
           _openNewDirectChat();
@@ -140,8 +196,8 @@ class _ChatListScreenState extends State<ChatListScreen>
     }
   }
 
-  /// Bottom sheet для создания группы/сообщества (только Общение/Группы)
-  void _showGroupCreateOptions() {
+  /// Bottom sheet для создания группы/сообщества
+  void _showGroupCreateOptions({bool isAcademic = false}) {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -166,12 +222,13 @@ class _ChatListScreenState extends State<ChatListScreen>
                 backgroundColor: AppColors.primary,
                 child: Icon(Icons.group, color: AppColors.textLight),
               ),
-              title: const Text('Создать группу',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+              title: Text(
+                  isAcademic ? 'Создать академическую группу' : 'Создать группу',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Все участники могут писать'),
               onTap: () {
                 Navigator.pop(context);
-                _openCreateDialog(ChatType.group);
+                _openCreateDialog(ChatType.group, isAcademic: isAcademic);
               },
             ),
             ListTile(
@@ -179,12 +236,13 @@ class _ChatListScreenState extends State<ChatListScreen>
                 backgroundColor: AppColors.primary,
                 child: Icon(Icons.campaign, color: AppColors.textLight),
               ),
-              title: const Text('Создать сообщество',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+              title: Text(
+                  isAcademic ? 'Создать академическое сообщество' : 'Создать сообщество',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Только администратор пишет'),
               onTap: () {
                 Navigator.pop(context);
-                _openCreateDialog(ChatType.community);
+                _openCreateDialog(ChatType.community, isAcademic: isAcademic);
               },
             ),
             const SizedBox(height: 8),
@@ -221,27 +279,40 @@ class _ChatListScreenState extends State<ChatListScreen>
           service: widget.service,
           onChatUpdated: _onChatUpdated,
           contacts: _contacts,
+          auth: widget.auth,
         ),
       ),
     );
     _loadChats();
   }
 
-  void _openCreateDialog(ChatType type) {
+  void _openCreateDialog(ChatType type, {bool isAcademic = false}) {
     showDialog(
       context: context,
       builder: (_) => _CreateChatDialog(
         type: type,
+        isAcademic: isAcademic,
         contacts: _contacts,
-        onCreated: (name, members, adminName) async {
-          final chat = await widget.service.createGroupOrCommunity(
-            name: name,
-            type: type,
-            members: members,
-            adminName: adminName,
-          );
-          if (mounted) {
-            setState(() => _chats.add(chat));
+        creatorName: widget.auth.currentUser?.name ?? 'Я',
+        onCreated: (name, members, adminName, description) async {
+          try {
+            final chat = await widget.service.createGroupOrCommunity(
+              name: name,
+              type: type,
+              members: members,
+              adminName: adminName,
+              isAcademic: isAcademic,
+              description: description,
+            );
+            if (mounted) {
+              setState(() => _chats.add(chat));
+            }
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Ошибка: $e')),
+              );
+            }
           }
         },
       ),
@@ -249,15 +320,16 @@ class _ChatListScreenState extends State<ChatListScreen>
   }
 
   Future<void> _logout() async {
-    await AuthService.logout();
+    await widget.auth.logout();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
         builder: (ctx) => AuthScreen(
+          auth: widget.auth,
           onLoginSuccess: () {
             Navigator.of(ctx).pushAndRemoveUntil(
               MaterialPageRoute(
-                builder: (_) => ChatListScreen(service: widget.service),
+                builder: (_) => ChatListScreen(service: widget.service, auth: widget.auth),
               ),
               (_) => false,
             );
@@ -277,6 +349,7 @@ class _ChatListScreenState extends State<ChatListScreen>
         builder: (_) => SearchScreen(
           service: widget.service,
           contacts: _contacts,
+          auth: widget.auth,
         ),
       ),
     ).then((_) => _loadChats());
@@ -317,11 +390,17 @@ class _ChatListScreenState extends State<ChatListScreen>
           // 1 — Общение
           _buildChatTab(),
           // 2 — Уведомления
-          _MobileNotificationsPage(),
+          _MobileNotificationsPage(
+            notifications: _notifications,
+            onMarkRead: (n) => setState(() => _notifications.remove(n)),
+            onMarkAllRead: () => setState(() => _notifications.clear()),
+          ),
           // 3 — Профиль
           _MobileProfilePage(
+            auth: widget.auth,
             onLogout: _logout,
             onAvatarChanged: _loadAvatar,
+            service: widget.service,
           ),
         ],
       ),
@@ -334,29 +413,46 @@ class _ChatListScreenState extends State<ChatListScreen>
           : null,
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _bottomIndex,
-        onTap: (i) => setState(() => _bottomIndex = i),
+        onTap: (i) {
+          setState(() {
+            _bottomIndex = i;
+            // Помечаем уведомления прочитанными при переходе на вкладку
+            if (i == 2) {
+              for (final n in _notifications) {
+                n.read = true;
+              }
+            }
+          });
+        },
         type: BottomNavigationBarType.fixed,
         selectedItemColor: AppColors.primary,
         unselectedItemColor: AppColors.subtle,
         selectedFontSize: 12,
         unselectedFontSize: 12,
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
             icon: Icon(Icons.school_outlined),
             activeIcon: Icon(Icons.school),
             label: 'Академический',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.chat_bubble_outline),
             activeIcon: Icon(Icons.chat_bubble),
             label: 'Общение',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.notifications_none),
-            activeIcon: Icon(Icons.notifications),
+            icon: Badge(
+              isLabelVisible: _unreadNotifications > 0,
+              label: Text(
+                '$_unreadNotifications',
+                style: const TextStyle(fontSize: 10),
+              ),
+              child: const Icon(Icons.notifications_none),
+            ),
+            activeIcon: const Icon(Icons.notifications),
             label: 'Уведомления',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.person_outline),
             activeIcon: Icon(Icons.person),
             label: 'Профиль',
@@ -369,40 +465,46 @@ class _ChatListScreenState extends State<ChatListScreen>
   Widget _buildAcademicTab() {
     return SafeArea(
       bottom: false,
-      child: Column(
-        children: [
-          Material(
-            elevation: 2,
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 4, 0),
-                  child: Row(
-                    children: [
-                      const Expanded(
-                        child: Text('Академический',
-                            style: TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.bold)),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isLandscape = constraints.maxHeight < 400;
+          return Column(
+            children: [
+              Material(
+                elevation: 2,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(16, isLandscape ? 4 : 12, 4, 0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text('Академический',
+                                style: TextStyle(
+                                    fontSize: isLandscape ? 16 : 20,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                          _searchAction(),
+                          if (!isLandscape) _avatarAction(),
+                        ],
                       ),
-                      _searchAction(),
-                      _avatarAction(),
-                    ],
-                  ),
+                    ),
+                    _tabBar(_academicTabCtrl),
+                  ],
                 ),
-                _tabBar(_academicTabCtrl),
-              ],
-            ),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _academicTabCtrl,
-              children: [
-                _buildChatList(_academicPersonal),
-                _buildChatList(_academicGroups),
-              ],
-            ),
-          ),
-        ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  controller: _academicTabCtrl,
+                  children: [
+                    _buildChatList(_academicPersonal),
+                    _buildChatList(_academicGroups),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -410,40 +512,46 @@ class _ChatListScreenState extends State<ChatListScreen>
   Widget _buildChatTab() {
     return SafeArea(
       bottom: false,
-      child: Column(
-        children: [
-          Material(
-            elevation: 2,
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 4, 0),
-                  child: Row(
-                    children: [
-                      const Expanded(
-                        child: Text('Общение',
-                            style: TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.bold)),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isLandscape = constraints.maxHeight < 400;
+          return Column(
+            children: [
+              Material(
+                elevation: 2,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(16, isLandscape ? 4 : 12, 4, 0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text('Общение',
+                                style: TextStyle(
+                                    fontSize: isLandscape ? 16 : 20,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                          _searchAction(),
+                          if (!isLandscape) _avatarAction(),
+                        ],
                       ),
-                      _searchAction(),
-                      _avatarAction(),
-                    ],
-                  ),
+                    ),
+                    _tabBar(_chatTabCtrl),
+                  ],
                 ),
-                _tabBar(_chatTabCtrl),
-              ],
-            ),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _chatTabCtrl,
-              children: [
-                _buildChatList(_regularPersonal),
-                _buildChatList(_regularGroups),
-              ],
-            ),
-          ),
-        ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  controller: _chatTabCtrl,
+                  children: [
+                    _buildChatList(_regularPersonal),
+                    _buildChatList(_regularGroups),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -485,6 +593,7 @@ class _ChatListScreenState extends State<ChatListScreen>
                       service: widget.service,
                       onChatUpdated: _onChatUpdated,
                       contacts: _contacts,
+                      auth: widget.auth,
                     ),
                   ),
                 );
@@ -568,10 +677,40 @@ class _ChatListScreenState extends State<ChatListScreen>
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Text(
-                      formatChatTime(chat.lastTime),
-                      style: const TextStyle(
-                          fontSize: 12, color: AppColors.subtle),
+                    // Правая колонка: время + бейдж непрочитанных
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          formatChatTime(chat.lastTime),
+                          style: const TextStyle(
+                              fontSize: 12, color: AppColors.subtle),
+                        ),
+                        if (chat.unreadCount > 0) ...[
+                          const SizedBox(height: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            constraints: const BoxConstraints(minWidth: 20),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              chat.unreadCount > 99
+                                  ? '99+'
+                                  : '${chat.unreadCount}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
@@ -590,6 +729,16 @@ class _ChatListScreenState extends State<ChatListScreen>
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _MobileNotificationsPage extends StatefulWidget {
+  final List<_AppNotification> notifications;
+  final void Function(_AppNotification) onMarkRead;
+  final VoidCallback onMarkAllRead;
+
+  const _MobileNotificationsPage({
+    required this.notifications,
+    required this.onMarkRead,
+    required this.onMarkAllRead,
+  });
+
   @override
   State<_MobileNotificationsPage> createState() =>
       _MobileNotificationsPageState();
@@ -598,30 +747,18 @@ class _MobileNotificationsPage extends StatefulWidget {
 class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
   int _selectedFilter = 0;
 
-  // Демо-данные
-  final List<_AppNotification> _notifications = [
-    _AppNotification(
-      senderName: 'Профессор Иванов А. С.',
-      senderRole: 'Преподаватель кафедры математики',
-      message: '+3 012 345 2345',
-      time: DateTime.now().subtract(const Duration(hours: 2)),
-    ),
-    _AppNotification(
-      senderName: 'Марина Филипова',
-      senderRole: 'Заведующая отделением',
-      message:
-          '«Студенты, имеющие долги, не будут допущены к написанию дипломной работы»',
-      time: DateTime.now().subtract(const Duration(hours: 5)),
-    ),
-  ];
-
   List<_AppNotification> get _filtered {
     if (_selectedFilter == 1) {
       final cutoff = DateTime.now().subtract(const Duration(days: 1));
-      return _notifications.where((n) => n.time.isAfter(cutoff)).toList();
+      return widget.notifications
+          .where((n) => n.time.isAfter(cutoff))
+          .toList();
     }
-    return _notifications;
+    return widget.notifications;
   }
+
+  void _markRead(_AppNotification n) => widget.onMarkRead(n);
+  void _markAllRead() => widget.onMarkAllRead();
 
   @override
   Widget build(BuildContext context) {
@@ -661,6 +798,19 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
                 const SizedBox(width: 8),
                 _buildFilterChip('За сутки', _selectedFilter == 1,
                     () => setState(() => _selectedFilter = 1)),
+                const Spacer(),
+                if (widget.notifications.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: _markAllRead,
+                    icon: const Icon(Icons.done_all, size: 16),
+                    label: const Text('Прочитать все',
+                        style: TextStyle(fontSize: 12)),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: Size.zero,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -688,7 +838,25 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
                     ),
                     itemBuilder: (_, i) {
                       final n = items[i];
-                      return _buildNotificationCard(n, isDark);
+                      // Dismissible позволяет смахнуть уведомление, чтобы
+                      // пометить прочитанным — привычная мобильная идиома.
+                      return Dismissible(
+                        key: ValueKey(
+                            '${n.senderName}_${n.time.millisecondsSinceEpoch}'),
+                        direction: DismissDirection.endToStart,
+                        onDismissed: (_) => _markRead(n),
+                        background: Container(
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(Icons.done_all,
+                              color: AppColors.primary),
+                        ),
+                        child: _buildNotificationCard(n, isDark),
+                      );
                     },
                   ),
           ),
@@ -724,57 +892,121 @@ class _MobileNotificationsPageState extends State<_MobileNotificationsPage> {
   }
 
   Widget _buildNotificationCard(_AppNotification n, bool isDark) {
+    final isMention = n.type == _NotifType.mention;
+    final accentColor = isMention ? AppColors.primary : Colors.teal;
+    final typeIcon   = isMention ? Icons.alternate_email : Icons.reply;
+    final typeLabel  = isMention ? 'Упоминание' : 'Ответ на сообщение';
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Иконка типа уведомления
         CircleAvatar(
           radius: 22,
-          backgroundColor: AppColors.primary.withValues(alpha: 0.15),
-          child: const Icon(Icons.person, color: AppColors.primary, size: 22),
+          backgroundColor: accentColor.withValues(alpha: 0.15),
+          child: Icon(typeIcon, color: accentColor, size: 20),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(n.senderName,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  )),
-              const SizedBox(height: 2),
-              Text(n.senderRole,
-                  style: TextStyle(fontSize: 11, color: AppColors.subtle)),
+              // Тип + имя отправителя
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: accentColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      typeLabel,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: accentColor,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      n.senderName,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
               if (n.message.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(n.message,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: isDark ? Colors.white70 : Colors.black54,
-                    )),
+                const SizedBox(height: 5),
+                Text(
+                  n.message,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: isDark ? Colors.white70 : Colors.black54,
+                  ),
+                ),
               ],
             ],
           ),
         ),
         const SizedBox(width: 8),
-        Text(
-          formatTime(n.time),
-          style: TextStyle(fontSize: 11, color: AppColors.subtle),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              formatTime(n.time),
+              style: TextStyle(fontSize: 11, color: AppColors.subtle),
+            ),
+            const SizedBox(height: 6),
+            // Кнопка «Прочитать» — удаляет уведомление из списка
+            GestureDetector(
+              onTap: () => _markRead(n),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: accentColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  'Прочитать',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: accentColor,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
+/// Тип уведомления — упоминание или ответ на сообщение пользователя.
+enum _NotifType { mention, reply }
+
 class _AppNotification {
+  final _NotifType type;
   final String senderName;
-  final String senderRole;
+  /// Текст сообщения, в котором упомянули / ответили.
   final String message;
   final DateTime time;
+  bool read = false;
+
   _AppNotification({
+    required this.type,
     required this.senderName,
-    required this.senderRole,
     required this.message,
     required this.time,
   });
@@ -785,12 +1017,18 @@ class _AppNotification {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _MobileProfilePage extends StatefulWidget {
+  final svc.AuthService auth;
   final VoidCallback onLogout;
   final VoidCallback onAvatarChanged;
 
+  /// ChatService для передачи в экран управления устройствами.
+  final ChatService service;
+
   const _MobileProfilePage({
+    required this.auth,
     required this.onLogout,
     required this.onAvatarChanged,
+    required this.service,
   });
 
   @override
@@ -807,31 +1045,52 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
     _loadProfile();
   }
 
-  Future<void> _loadProfile() async {
-    final p = await ProfileStorage.loadProfile();
-    if (mounted) setState(() => _profile = p);
+  void _loadProfile() {
+    final user = widget.auth.currentUser;
+    if (user == null) return;
+    setState(() {
+      _profile = UserProfile(
+        name: user.name,
+        login: user.name,
+        bio: user.bio ?? '',
+        avatarPath: user.avatarUrl,
+        group: user.group,
+        phone: user.phone,
+        role: user.isTeacher ? ProfileRole.teacher : ProfileRole.student,
+      );
+    });
   }
 
-  // ─── Сохранение поля ───────────────────────────────────────────────────────
+  // ─── Сохранение поля на сервере ─────────────────────────────────────────────
 
   Future<void> _saveField({
     String? name, String? bio, String? phone, bool? clearPhone,
-    String? avatarPath, bool? clearAvatar, String? group, bool? clearGroup,
+    String? avatarPath, bool? clearAvatar,
   }) async {
-    final updated = _profile!.copyWith(
-      name: name ?? _profile!.name,
-      bio: bio ?? _profile!.bio,
-      phone: phone ?? _profile!.phone,
-      clearPhone: clearPhone ?? false,
-      avatarPath: avatarPath ?? _profile!.avatarPath,
-      clearAvatar: clearAvatar ?? false,
-      group: group ?? _profile!.group,
-      clearGroup: clearGroup ?? false,
-    );
-    await ProfileStorage.saveProfile(updated);
-    if (!mounted) return;
-    setState(() => _profile = updated);
-    widget.onAvatarChanged();
+    try {
+      // Если пришёл локальный путь аватарки — сначала заливаем на сервер.
+      String? resolvedAvatar = avatarPath;
+      if (clearAvatar != true &&
+          avatarPath != null &&
+          avatarPath.isNotEmpty &&
+          !ApiConfig.isServerMediaPath(avatarPath)) {
+        resolvedAvatar = await widget.auth.uploadAvatar(avatarPath);
+      }
+      await widget.auth.updateProfile(
+        name: name,
+        bio: bio,
+        phone: clearPhone == true ? '' : phone,
+        avatarUrl: clearAvatar == true ? '' : resolvedAvatar,
+      );
+      if (!mounted) return;
+      _loadProfile();
+      widget.onAvatarChanged();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ошибка сохранения'), behavior: SnackBarBehavior.floating),
+      );
+    }
   }
 
   // ─── Редактирование текстового поля через диалог ──────────────────────────
@@ -970,6 +1229,21 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
     }
   }
 
+  // ─── Управление устройствами ───────────────────────────────────────────────
+
+  void _openDevices() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DevicesScreen(
+          auth: widget.auth,
+          events: widget.service.events,
+          onLogout: widget.onLogout,
+        ),
+      ),
+    );
+  }
+
   // ─── Выход ─────────────────────────────────────────────────────────────────
 
   Future<void> _logout() async {
@@ -1028,6 +1302,15 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
 
         // Личные данные — каждое поле нажимаемое
         _buildEditableInfoCard(p, isDark),
+        const SizedBox(height: 12),
+
+        // Устройства
+        _card(isDark: isDark,
+          child: _actionRow(
+            icon: Icons.devices_outlined, label: 'Управление устройствами',
+            color: AppColors.primary, isDark: isDark, onTap: _openDevices,
+          ),
+        ),
         const SizedBox(height: 12),
 
         // Выйти
@@ -1505,15 +1788,20 @@ class _MobileProfilePageState extends State<_MobileProfilePage> {
 
 class _CreateChatDialog extends StatefulWidget {
   final ChatType type;
+  final bool isAcademic;
   final List<AppContact> contacts;
+  /// Имя текущего пользователя — становится создателем группы/сообщества.
+  final String creatorName;
   final Future<void> Function(
-          String name, List<ChatMember> members, String? adminName)
+          String name, List<ChatMember> members, String? adminName, String? description)
       onCreated;
 
   const _CreateChatDialog({
     required this.type,
     required this.contacts,
     required this.onCreated,
+    required this.creatorName,
+    this.isAcademic = false,
   });
 
   @override
@@ -1522,11 +1810,14 @@ class _CreateChatDialog extends StatefulWidget {
 
 class _CreateChatDialogState extends State<_CreateChatDialog> {
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
   final Set<String> _selectedContacts = {};
   String? _nameError;
 
-  String get _title =>
-      widget.type == ChatType.group ? 'Новая группа' : 'Новое сообщество';
+  String get _title {
+    final base = widget.type == ChatType.group ? 'Новая группа' : 'Новое сообщество';
+    return widget.isAcademic ? '$base (академическая)' : base;
+  }
 
   Future<void> _submit() async {
     final name = _nameController.text.trim();
@@ -1535,18 +1826,28 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
       return;
     }
 
-    final members = _selectedContacts
-        .map((n) => ChatMember(name: n, role: MemberRole.member))
-        .toList();
-    final adminName = widget.type == ChatType.community ? 'Я' : null;
+    // Создатель всегда идёт первым с ролью creator.
+    // Остальные участники — с ролью member.
+    final members = [
+      ChatMember(name: widget.creatorName, role: MemberRole.creator),
+      ..._selectedContacts
+          .where((n) => n != widget.creatorName) // исключаем дублирование
+          .map((n) => ChatMember(name: n, role: MemberRole.member)),
+    ];
+    // adminName — реальное имя создателя (сервер и клиент используют это поле)
+    final adminName = widget.creatorName;
+    final description = _descriptionController.text.trim().isEmpty
+        ? null
+        : _descriptionController.text.trim();
 
     Navigator.pop(context);
-    await widget.onCreated(name, members, adminName);
+    await widget.onCreated(name, members, adminName, description);
   }
 
   @override
   void dispose() {
     _nameController.dispose();
+    _descriptionController.dispose();
     super.dispose();
   }
 
@@ -1571,6 +1872,16 @@ class _CreateChatDialogState extends State<_CreateChatDialog> {
               onChanged: (_) {
                 if (_nameError != null) setState(() => _nameError = null);
               },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _descriptionController,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Описание (необязательно)',
+                border: OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 16),
             const Text(
@@ -1672,9 +1983,15 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
     if (_isMobile) _loadDeviceContacts();
   }
 
-  Future<void> _loadRegisteredPhones() async {
-    final phones = await AuthService.getRegisteredPhones();
-    if (mounted) setState(() => _registeredPhones = phones);
+  void _loadRegisteredPhones() {
+    // Все зарегистрированные телефоны берём из списка контактов сервера
+    final phones = <String>{};
+    for (final c in widget.contacts) {
+      if (c.phone != null && c.phone!.isNotEmpty) {
+        phones.add(c.phone!.replaceAll(RegExp(r'\D'), ''));
+      }
+    }
+    setState(() => _registeredPhones = phones);
   }
 
   @override
@@ -1687,7 +2004,7 @@ class _ContactPickerScreenState extends State<_ContactPickerScreen> {
 
   bool _isInApp(fc.Contact contact) {
     for (final p in contact.phones) {
-      final normalized = AuthService.normalizePhone(p.number);
+      final normalized = p.number.replaceAll(RegExp(r'\D'), '');
       if (normalized.isNotEmpty && _registeredPhones.contains(normalized)) {
         return true;
       }

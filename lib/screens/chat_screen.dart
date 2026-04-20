@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -6,11 +7,29 @@ import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
 import '../widgets/chat_widgets.dart';
-import '../profile_screen.dart' show ProfileStorage;
+import '../services/auth_service.dart' as svc;
 import 'chat_settings_screen.dart';
 import 'comments_screen.dart';
 import 'contact_profile_screen.dart';
 import 'group_profile_screen.dart';
+
+// ── Элементы плоского списка (разделитель дат + сообщение) ───────────────────
+
+sealed class _ListItem {}
+
+/// Визуальный разделитель между группами сообщений с разными датами.
+final class _SeparatorItem extends _ListItem {
+  final DateTime date;
+  _SeparatorItem(this.date);
+}
+
+/// Обёртка над сообщением для плоского списка.
+final class _MsgItem extends _ListItem {
+  final Message message;
+  _MsgItem(this.message);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Полноэкранное представление одного чата: список сообщений, панель ввода и выбор медиа.
 class ChatScreen extends StatefulWidget {
@@ -20,6 +39,7 @@ class ChatScreen extends StatefulWidget {
   final List<AppContact> contacts;
   /// Если true — экран встроен в панель (desktop), кнопка «назад» скрыта.
   final bool embedded;
+  final svc.AuthService? auth;
 
   const ChatScreen({
     super.key,
@@ -28,6 +48,7 @@ class ChatScreen extends StatefulWidget {
     required this.onChatUpdated,
     this.contacts = const [],
     this.embedded = false,
+    this.auth,
   });
 
   @override
@@ -36,6 +57,8 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   late List<Message> _messages;
+  /// Плоский список для ListView: содержит _SeparatorItem и _MsgItem.
+  List<_ListItem> _items = [];
   late Chat _currentChat;
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -58,12 +81,37 @@ class _ChatScreenState extends State<ChatScreen> {
   /// 'group' | 'contact' | null
   String? _embeddedProfileType;
 
+  // ── Закреплённые сообщения ────────────────────────────
+  /// Индекс текущего закреплённого сообщения в баре (цикличный).
+  int _pinnedBarIndex = 0;
+  /// Ключи для GlobalKey-прокрутки к конкретному сообщению.
+  final Map<String, GlobalKey> _itemKeys = {};
+
+  // ── @упоминания ───────────────────────────────────────
+  /// Поисковый запрос после '@' (null — пикер не показывается).
+  String? _mentionQuery;
+  /// Позиция символа '@' в тексте поля ввода.
+  int? _mentionStart;
+  /// Упоминания, накопленные в текущем черновике сообщения.
+  final List<Mention> _pendingMentions = [];
+
+  // ── Подписка на realtime-события (SignalR) ───────────
+  StreamSubscription<ChatEvent>? _eventSub;
+
   @override
   void initState() {
     super.initState();
     _currentChat = widget.chat;
-    _messages = List.from(widget.chat.messages);
+    _setMessages(widget.chat.messages);
     _loadAvatar();
+    _controller.addListener(_onTextChanged);
+    // Подписка на события от сервера — чтобы новые сообщения, правки
+    // и удаления сразу появлялись в открытом чате без повторного входа.
+    _eventSub = widget.service.events.listen(_onChatEvent);
+    // Отмечаем все чужие сообщения прочитанными при входе в чат — это
+    // сработает только в ApiChatService после того, как SignalR подключится,
+    // но это нормально: безопасный повтор на сервере (read-status уже есть).
+    _markAllUnreadRead();
     // Прокрутить к последнему сообщению после отрисовки первого кадра.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -73,9 +121,139 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _loadAvatar() async {
-    final profile = await ProfileStorage.loadProfile();
-    if (mounted) setState(() => _myAvatarPath = profile.avatarPath);
+  /// Отправляет markRead для всех чужих сообщений в текущем чате.
+  /// Сервер сам отфильтрует уже прочитанные и разошлёт MessageStatusChanged
+  /// только отправителям новых «прочитанных» сообщений.
+  void _markAllUnreadRead() {
+    final ids = _messages
+        .where((m) => !m.isMe && m.status != MessageStatus.read)
+        .map((m) => m.id)
+        .toList();
+    if (ids.isEmpty) return;
+    // Запуск без await — это фоновая операция, не должна блокировать UI
+    // и падения хаба (например, во время переподключения) не должны
+    // просачиваться в экран.
+    widget.service.markRead(chatId: _currentChat.id, messageIds: ids);
+  }
+
+  /// Обработка realtime-событий от сервера для текущего чата.
+  void _onChatEvent(ChatEvent event) {
+    if (!mounted) return;
+    switch (event) {
+      case MessageReceived(:final chatId, :final message):
+        if (chatId != _currentChat.id) return;
+        // Не дублируем, если сообщение уже есть (например, пришло и в ответе
+        // от sendMessage, и через SignalR).
+        if (_messages.any((m) => m.id == message.id)) return;
+        final wasNearBottom = _isNearBottom();
+        setState(() {
+          _setMessages([..._messages, message]);
+        });
+        // Если это чужое сообщение, а чат открыт — сразу помечаем прочитанным.
+        if (!message.isMe) {
+          widget.service.markRead(
+            chatId: _currentChat.id,
+            messageIds: [message.id],
+          );
+        }
+        // Скроллим только если пользователь уже был у низа списка —
+        // чтобы не выдёргивать его, когда он читает историю выше.
+        if (wasNearBottom) _scrollToBottom();
+      case MessageEdited(:final chatId, :final messageId, :final newText):
+        if (chatId != _currentChat.id) return;
+        setState(() {
+          _setMessages(_messages
+              .map((m) => m.id == messageId
+                  ? m.copyWith(text: newText, isEdited: true)
+                  : m)
+              .toList());
+        });
+      case MessageDeleted(:final chatId, :final messageIds):
+        if (chatId != _currentChat.id) return;
+        setState(() {
+          _setMessages(_messages.where((m) => !messageIds.contains(m.id)).toList());
+        });
+      case ChatUpdated(:final chat):
+        if (chat.id != _currentChat.id) return;
+        setState(() {
+          _currentChat = chat;
+          _setMessages(chat.messages);
+        });
+      case ChatDeleted():
+        // Удалили текущий чат — ничего не делаем тут, родитель закроет экран.
+        break;
+      case MessageStatusChanged(
+          :final chatId,
+          :final messageId,
+          :final status,
+        ):
+        if (chatId != _currentChat.id) return;
+        // Обновляем статус в нашем локальном списке, чтобы галочки
+        // перекрасились (✓ → ✓✓ → голубые ✓✓) без перезагрузки чата.
+        setState(() {
+          _setMessages(_messages
+              .map((m) => m.id == messageId ? m.copyWith(status: status) : m)
+              .toList());
+        });
+      case MessagePinned(:final chatId, :final messageId):
+        if (chatId != _currentChat.id) return;
+        setState(() {
+          final ids = List<String>.from(_currentChat.pinnedMessageIds);
+          if (!ids.contains(messageId)) ids.add(messageId);
+          _currentChat = _currentChat.copyWith(pinnedMessageIds: ids);
+        });
+      case MessageUnpinned(:final chatId, :final messageId):
+        if (chatId != _currentChat.id) return;
+        setState(() {
+          final ids = _currentChat.pinnedMessageIds
+              .where((id) => id != messageId)
+              .toList();
+          _currentChat = _currentChat.copyWith(pinnedMessageIds: ids);
+          _clampPinnedBarIndex(ids.length);
+        });
+      case PollVoted(:final chatId, :final messageId, :final userId, :final optionIds):
+        if (chatId != _currentChat.id) return;
+        setState(() {
+          _setMessages(_messages.map((m) {
+            if (m.id != messageId || m.poll == null) return m;
+            final poll    = m.poll!;
+            final prev    = poll.userVotes[userId] ?? const [];
+            final newOpts = poll.options.map((o) {
+              int v = o.votes;
+              if (prev.contains(o.id))     v = (v - 1).clamp(0, 999999);
+              if (optionIds.contains(o.id)) v++;
+              return o.copyWith(votes: v);
+            }).toList();
+            final newUV = Map<String, List<String>>.from(poll.userVotes)
+              ..[userId] = optionIds;
+            final isMe = userId == (widget.auth?.currentUser?.name ?? '');
+            return m.copyWith(
+              poll: poll.copyWith(
+                options: newOpts,
+                userVotes: newUV,
+                myVotes: isMe ? optionIds : poll.myVotes,
+              ),
+            );
+          }).toList());
+        });
+      case PollClosed(:final chatId, :final messageId):
+        if (chatId != _currentChat.id) return;
+        setState(() {
+          _setMessages(_messages.map((m) {
+            if (m.id != messageId || m.poll == null) return m;
+            return m.copyWith(poll: m.poll!.copyWith(isClosed: true));
+          }).toList());
+        });
+      case SessionTerminated():
+        // Обрабатывается глобально в ChatListScreen / ResponsiveShell.
+        // ChatScreen не требует дополнительных действий.
+        break;
+    }
+  }
+
+  void _loadAvatar() {
+    final avatarUrl = widget.auth?.currentUser?.avatarUrl;
+    if (mounted) setState(() => _myAvatarPath = avatarUrl);
   }
 
   // ── Отправка или сохранение правки ────────────────────
@@ -100,15 +278,33 @@ class _ChatScreenState extends State<ChatScreen> {
           )
         : null;
 
+    // Перестраиваем позиции упоминаний по финальному тексту
+    final mentions = _buildMentionsForText(text);
+    // Отправляем серверу только «настоящие» упоминания:
+    //   • В личных чатах — никогда: userId собеседника неизвестен, а
+    //     уведомление о каждом сообщении и так приходит.
+    //   • В группах — только если userId ≠ username (т.е. сервер дал нам
+    //     реальный UUID, а не просто отображаемое имя). Это исключает
+    //     пинги «призрачных» пользователей, которые сервер находит по
+    //     имени вместо ID.
+    //   • @all — специальный случай, всегда разрешён.
+    final capturedMentions = _currentChat.type == ChatType.direct
+        ? const <Mention>[]
+        : mentions
+            .where((m) => m.userId == 'all' || m.userId != m.username)
+            .toList();
+    _pendingMentions.clear();
+
     final updated = await widget.service.sendMessage(
       chatId: _currentChat.id,
       text: text,
       attachment: attachment,
       replyTo: reply,
+      mentions: capturedMentions,
     );
     if (!mounted) return;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
       _replyingTo = null;
     });
@@ -148,14 +344,19 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
     });
     widget.onChatUpdated(updated);
   }
 
   void _cancelEdit() {
-    setState(() => _editingMessage = null);
+    setState(() {
+      _editingMessage = null;
+      _pendingMentions.clear();
+      _mentionQuery = null;
+      _mentionStart = null;
+    });
     _controller.clear();
   }
 
@@ -167,7 +368,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
     });
     widget.onChatUpdated(updated);
@@ -186,7 +387,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
     });
     widget.onChatUpdated(updated);
@@ -354,6 +555,31 @@ class _ChatScreenState extends State<ChatScreen> {
               title: const Text('Выделить'),
               onTap: () { Navigator.pop(context); _enterSelectionMode(message); },
             ),
+            // Закрепить / открепить
+            if (_canPinMessages) ...[
+              Builder(builder: (ctx) {
+                final isPinned = _currentChat.pinnedMessageIds.contains(message.id);
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+                    child: Icon(
+                      isPinned ? Icons.push_pin_outlined : Icons.push_pin,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  title: Text(isPinned ? 'Открепить' : 'Закрепить'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    if (isPinned) {
+                      _unpinMessage(message.id);
+                    } else {
+                      _pinMessage(message);
+                    }
+                  },
+                );
+              }),
+            ],
             // Удалить (только своё)
             if (message.isMe)
               ListTile(
@@ -483,6 +709,16 @@ class _ChatScreenState extends State<ChatScreen> {
               title: const Text('Документ'),
               onTap: () { Navigator.pop(context); _pickDocument(); },
             ),
+            // Опросы — только для групп и сообществ
+            if (_currentChat.type != ChatType.direct)
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: AppColors.primary,
+                  child: Icon(Icons.poll_outlined, color: Colors.white),
+                ),
+                title: const Text('Создать опрос'),
+                onTap: () { Navigator.pop(context); _showCreatePollDialog(); },
+              ),
             const SizedBox(height: 8),
           ],
         ),
@@ -499,12 +735,13 @@ class _ChatScreenState extends State<ChatScreen> {
       chatId: _currentChat.id,
       messageId: message.id,
       text: text,
+      senderName: widget.auth?.currentUser?.name ?? 'Я',
       attachment: attachment,
       replyTo: replyTo,
     );
     if (!mounted) return null;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
       if (_commentsMessage != null) {
         _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
@@ -523,7 +760,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return null;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
       if (_commentsMessage != null) {
         _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
@@ -541,7 +778,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return null;
     setState(() {
-      _messages = List.from(updated.messages);
+      _setMessages(updated.messages);
       _currentChat = updated;
       if (_commentsMessage != null) {
         _commentsMessage = updated.messages.firstWhere((m) => m.id == message.id);
@@ -563,6 +800,7 @@ class _ChatScreenState extends State<ChatScreen> {
           message: message,
           chat: _currentChat,
           service: widget.service,
+          currentUserName: widget.auth?.currentUser?.name,
           onSend: (text, {attachment, replyTo}) =>
               _commentOnSend(message, text, attachment: attachment, replyTo: replyTo),
           onEdit: (commentId, newText) =>
@@ -581,6 +819,7 @@ class _ChatScreenState extends State<ChatScreen> {
       chat: _currentChat,
       service: widget.service,
       embedded: true,
+      currentUserName: widget.auth?.currentUser?.name,
       onBack: () => setState(() => _commentsMessage = null),
       onSend: (text, {attachment, replyTo}) =>
           _commentOnSend(message, text, attachment: attachment, replyTo: replyTo),
@@ -600,7 +839,10 @@ class _ChatScreenState extends State<ChatScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => GroupProfileScreen(chat: _currentChat),
+        builder: (_) => GroupProfileScreen(
+          chat: _currentChat,
+          currentUserName: widget.auth?.currentUser?.name,
+        ),
       ),
     );
   }
@@ -637,6 +879,7 @@ class _ChatScreenState extends State<ChatScreen> {
         chat: _currentChat,
         embedded: true,
         onBack: backFn,
+        currentUserName: widget.auth?.currentUser?.name,
       );
     }
     // contact
@@ -656,15 +899,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Проверяет, может ли текущий пользователь открыть настройки группы.
-  /// Доступ только для создателя или админа.
+  /// Доступ только для создателя или администратора.
   bool _canAccessSettings(Chat chat) {
-    // Если текущий пользователь — создатель (adminName == 'Я')
-    if (chat.adminName == 'Я') return true;
-    // Проверяем роль в списке участников
-    // Текущий пользователь не является участником members — он создатель по-умолчанию
-    // Если нет adminName, значит создатель — текущий пользователь
-    if (chat.adminName == null) return true;
-    return false;
+    final me = widget.auth?.currentUser?.name;
+    if (me == null || me.isEmpty) return false;
+    return chat.isCreatorOrAdmin(me);
   }
 
   Future<void> _openSettings() async {
@@ -680,8 +919,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (!mounted) return;
     if (result == true) {
-      // Чат удалён — возвращаемся в список
-      Navigator.of(context).pop();
+      // Чат удалён. На мобильном — pop к списку; на десктопе embedded-виджет
+      // не открыт через Navigator, поэтому pop ничего не даст.
+      // ResponsiveShell сам очистит _selectedChat через событие ChatDeleted.
+      if (!widget.embedded) Navigator.of(context).pop();
     } else if (result is Chat) {
       final saved = await widget.service.updateChatSettings(result);
       if (!mounted) return;
@@ -690,22 +931,481 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Плавный (или мгновенный при больших прыжках) скролл к последнему сообщению.
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_scrollController.hasClients) {
-        _scrollController.jumpTo(
-          _scrollController.position.maxScrollExtent,
-        );
-      }
+      if (!_scrollController.hasClients) return;
+      final target = _scrollController.position.maxScrollExtent;
+      final current = _scrollController.position.pixels;
+      // Если мы и так у низа (± небольшой зазор), ничего не делаем —
+      // чтобы не вызывать бесконечные переустановки позиции при asynchronous
+      // пересчёте высоты (подгрузка картинок и т.п.).
+      if ((target - current).abs() < 2) return;
+      _scrollController.jumpTo(target);
     });
+  }
+
+  /// Считаем пользователя "у низа" в пределах 120px от максимального скролла.
+  bool _isNearBottom() {
+    if (!_scrollController.hasClients) return true;
+    final pos = _scrollController.position;
+    return (pos.maxScrollExtent - pos.pixels) < 120;
   }
 
   @override
   void dispose() {
+    _eventSub?.cancel();
+    _controller.removeListener(_onTextChanged);
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  // ── Хелперы списка сообщений ──────────────────────────
+
+  /// Обновляет [_messages] и перестраивает [_items] с разделителями дат.
+  /// Вызывать внутри setState() или до первого build (в initState).
+  void _setMessages(List<Message> msgs) {
+    _messages = List.from(msgs)..sort((a, b) => a.time.compareTo(b.time));
+    _items = _buildItemList();
+  }
+
+  List<_ListItem> _buildItemList() {
+    final items = <_ListItem>[];
+    DateTime? lastDay;
+    for (final msg in _messages) {
+      final day = DateTime(msg.time.year, msg.time.month, msg.time.day);
+      if (lastDay == null || day != lastDay) {
+        items.add(_SeparatorItem(day));
+        lastDay = day;
+      }
+      items.add(_MsgItem(msg));
+    }
+    return items;
+  }
+
+  /// Возвращает (или создаёт) стабильный GlobalKey для сообщения с [messageId].
+  GlobalKey _keyFor(String messageId) =>
+      _itemKeys.putIfAbsent(messageId, GlobalKey.new);
+
+  // ── Прокрутка к конкретному сообщению ─────────────────
+
+  void _scrollToMessage(String messageId) {
+    // 1. Если виджет уже отрисован — используем Scrollable.ensureVisible
+    final key = _itemKeys[messageId];
+    if (key?.currentContext != null) {
+      Scrollable.ensureVisible(
+        key!.currentContext!,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOut,
+        alignment: 0.3,
+      );
+      return;
+    }
+    // 2. Fallback: приблизительная позиция по индексу
+    final idx = _items.indexWhere(
+        (it) => it is _MsgItem && it.message.id == messageId);
+    if (idx < 0 || !_scrollController.hasClients) return;
+    final max = _scrollController.position.maxScrollExtent;
+    if (max <= 0) return;
+    final approx = (idx / (_items.length - 1).clamp(1, double.infinity)) * max;
+    _scrollController.animateTo(
+      approx.clamp(0.0, max),
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOut,
+    );
+  }
+
+  // ── Права на закрепление ──────────────────────────────
+
+  /// В личных чатах закрепить может любой участник;
+  /// в группах/сообществах — только создатель или администратор.
+  bool get _canPinMessages {
+    if (_currentChat.type == ChatType.direct) return true;
+    return _currentChat.isCreatorOrAdmin(widget.auth?.currentUser?.name);
+  }
+
+  // ── Закрепить / открепить сообщение ───────────────────
+
+  Future<void> _pinMessage(Message message) async {
+    final pinned = _currentChat.pinnedMessageIds;
+    if (pinned.contains(message.id)) return;
+    if (pinned.length >= ChatService.maxPinnedMessages) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'Можно закрепить не более ${ChatService.maxPinnedMessages} сообщений'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+      return;
+    }
+    try {
+      final updated = await widget.service.pinMessage(
+        chatId: _currentChat.id,
+        messageId: message.id,
+      );
+      if (!mounted) return;
+      setState(() => _currentChat = updated);
+      widget.onChatUpdated(updated);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Сообщение закреплено'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  Future<void> _unpinMessage(String messageId) async {
+    try {
+      final updated = await widget.service.unpinMessage(
+        chatId: _currentChat.id,
+        messageId: messageId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _currentChat = updated;
+        _clampPinnedBarIndex(updated.pinnedMessageIds.length);
+      });
+      widget.onChatUpdated(updated);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Сообщение откреплено'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  void _clampPinnedBarIndex(int newLen) {
+    if (newLen == 0) {
+      _pinnedBarIndex = 0;
+    } else if (_pinnedBarIndex >= newLen) {
+      _pinnedBarIndex = newLen - 1;
+    }
+  }
+
+  // ── Tap по бару закреплённых ──────────────────────────
+
+  void _onPinnedBarTap() {
+    final pinned = _currentChat.pinnedMessageIds;
+    if (pinned.isEmpty) return;
+    final messageId = pinned[_pinnedBarIndex];
+    _scrollToMessage(messageId);
+    setState(() {
+      _pinnedBarIndex = (_pinnedBarIndex + 1) % pinned.length;
+    });
+  }
+
+  // ── @упоминания ───────────────────────────────────────
+
+  /// Слушатель текстового поля: обнаруживает активный ввод @упоминания.
+  void _onTextChanged() {
+    final text   = _controller.text;
+    final cursor = _controller.selection.baseOffset;
+    if (cursor < 0) {
+      if (_mentionQuery != null) setState(() { _mentionQuery = null; _mentionStart = null; });
+      return;
+    }
+    final before  = cursor <= text.length ? text.substring(0, cursor) : text;
+    final atIndex = before.lastIndexOf('@');
+    if (atIndex < 0) {
+      if (_mentionQuery != null) setState(() { _mentionQuery = null; _mentionStart = null; });
+      return;
+    }
+    // @ должна стоять в начале или после пробела
+    if (atIndex > 0 && !RegExp(r'\s').hasMatch(text[atIndex - 1])) {
+      if (_mentionQuery != null) setState(() { _mentionQuery = null; _mentionStart = null; });
+      return;
+    }
+    // Между @ и курсором не должно быть пробела
+    final afterAt = before.substring(atIndex + 1);
+    if (afterAt.contains(' ') || afterAt.contains('\n')) {
+      if (_mentionQuery != null) setState(() { _mentionQuery = null; _mentionStart = null; });
+      return;
+    }
+    // Лимит упоминаний
+    if (_pendingMentions.length >= ChatService.maxMentionsPerMessage) {
+      if (_mentionQuery != null) setState(() { _mentionQuery = null; _mentionStart = null; });
+      return;
+    }
+    setState(() { _mentionQuery = afterAt; _mentionStart = atIndex; });
+  }
+
+  /// Вставляет выбранного участника как @упоминание.
+  void _insertMention(ChatMember member) {
+    if (_mentionStart == null) return;
+    if (_pendingMentions.length >= ChatService.maxMentionsPerMessage) return;
+    // Предпочитаем серверный userId; при его отсутствии используем отображаемое имя.
+    _doInsertMention(member.userId ?? member.name, member.name);
+  }
+
+  /// Вставляет @all (только для администраторов).
+  void _insertMentionAll() {
+    if (_mentionStart == null) return;
+    if (_pendingMentions.length >= ChatService.maxMentionsPerMessage) return;
+    _doInsertMention('all', 'all');
+  }
+
+  void _doInsertMention(String userId, String username) {
+    final text   = _controller.text;
+    final cursor = _controller.selection.baseOffset.clamp(0, text.length);
+    final before = text.substring(0, _mentionStart!);
+    final after  = cursor < text.length ? text.substring(cursor) : '';
+    final token  = '@$username';
+    final newText = '$before$token $after';
+    setState(() {
+      _pendingMentions.add(Mention(
+        userId:   userId,
+        username: username,
+        offset:   _mentionStart!,
+        length:   token.length,
+      ));
+      _mentionQuery = null;
+      _mentionStart = null;
+    });
+    _controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: before.length + token.length + 1),
+    );
+  }
+
+  /// Перестраивает список упоминаний на основе финального текста сообщения.
+  /// Поддерживает как упоминания, выбранные из пикера (через [_pendingMentions]),
+  /// так и вручную набранные @username (матчатся по участникам чата).
+  List<Mention> _buildMentionsForText(String text) {
+    // userId участников, уже выбранных через пикер
+    final pendingByName = <String, String>{
+      for (final m in _pendingMentions) m.username: m.userId,
+    };
+
+    // Fallback: все участники чата (вручную набранные упоминания)
+    final membersByName = <String, String>{};
+    for (final m in _currentChat.members) {
+      // Предпочитаем серверный userId; при его отсутствии — имя
+      membersByName[m.name] = m.userId ?? m.name;
+    }
+    // В личном чате: добавляем собеседника как виртуального участника.
+    // Серверного userId нет — упоминания в direct-чате не отправляются на сервер
+    // (метаданные не нужны: получатель и так уведомляется о каждом сообщении).
+    if (_currentChat.type == ChatType.direct) {
+      membersByName[_currentChat.name] = _currentChat.name;
+    }
+    // @all — специальное упоминание
+    membersByName['all'] = 'all';
+
+    final result = <Mention>[];
+    final regex  = RegExp(r'@(\S+)');
+    for (final match in regex.allMatches(text)) {
+      final raw  = match.group(1)!;
+      final name = raw.replaceAll(RegExp(r'[.,!?;:\n]+$'), '');
+      // Приоритет: пикер → участники чата
+      final userId = pendingByName[name] ?? membersByName[name];
+      if (userId == null) continue;
+      result.add(Mention(
+        userId:   userId,
+        username: name,
+        offset:   match.start,
+        length:   match.end - match.start,
+      ));
+      if (result.length >= ChatService.maxMentionsPerMessage) break;
+    }
+    return result;
+  }
+
+  /// Тап по @упоминанию → открывает профиль пользователя.
+  void _onMentionTap(Mention mention) {
+    if (mention.userId == 'all') return;
+    final contact = widget.contacts
+        .where((c) => c.name == mention.username)
+        .firstOrNull;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ContactProfileScreen(
+          name:        mention.username,
+          avatarPath:  _currentChat.type == ChatType.direct ? _currentChat.avatarPath : null,
+          description: null,
+          phone:       contact?.phone,
+          group:       contact?.group,
+        ),
+      ),
+    );
+  }
+
+  /// Виджет-пикер участников для @упоминания (появляется над полем ввода).
+  Widget _buildMentionPicker() {
+    final query = (_mentionQuery ?? '').toLowerCase();
+
+    // Для личных чатов показываем собеседника как виртуального участника
+    final baseMembers = _currentChat.type == ChatType.direct &&
+            _currentChat.members.isEmpty
+        ? [ChatMember(name: _currentChat.name, role: MemberRole.member)]
+        : _currentChat.members;
+
+    final members = baseMembers
+        .where((m) => m.name.toLowerCase().contains(query))
+        .toList();
+    final showAll = _canPinMessages &&
+        ('all'.contains(query) || 'everyone'.contains(query) || query.isEmpty);
+    if (members.isEmpty && !showAll) return const SizedBox.shrink();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 200),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        border: Border(
+          top: BorderSide(
+            color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06),
+          ),
+        ),
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        padding: EdgeInsets.zero,
+        children: [
+          if (showAll)
+            ListTile(
+              dense: true,
+              leading: const CircleAvatar(
+                radius: 16,
+                backgroundColor: AppColors.primary,
+                child: Icon(Icons.alternate_email, size: 16, color: Colors.white),
+              ),
+              title: const Text('@all',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Упомянуть всех',
+                  style: TextStyle(fontSize: 11)),
+              onTap: _insertMentionAll,
+            ),
+          ...members.map((m) {
+            // Есть ли реальный серверный ID? Если нет — пинг не дойдёт.
+            final hasServerId = m.userId != null && m.userId != m.name;
+            return ListTile(
+              dense: true,
+              leading: CircleAvatar(
+                radius: 16,
+                backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+                child: Text(
+                  m.name.isNotEmpty ? m.name[0].toUpperCase() : '?',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+              title: Text(m.name),
+              subtitle: m.group != null || !hasServerId
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (m.group != null)
+                          Text(m.group!, style: const TextStyle(fontSize: 11)),
+                        if (!hasServerId)
+                          const Text(
+                            'Упоминание только визуальное (сервер не выдал ID)',
+                            style: TextStyle(fontSize: 10, color: AppColors.subtle),
+                          ),
+                      ],
+                    )
+                  : null,
+              trailing: hasServerId
+                  ? null
+                  : const Icon(Icons.notifications_off_outlined,
+                      size: 16, color: AppColors.subtle),
+              onTap: () => _insertMention(m),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ── Опросы ───────────────────────────────────────────
+
+  Future<void> _votePoll(String messageId, List<String> optionIds) async {
+    try {
+      final updated = await widget.service.votePoll(
+        chatId:    _currentChat.id,
+        messageId: messageId,
+        optionIds: optionIds,
+        userId:    widget.auth?.currentUser?.name ?? 'me',
+      );
+      if (!mounted) return;
+      setState(() { _setMessages(updated.messages); _currentChat = updated; });
+      widget.onChatUpdated(updated);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка голосования: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  Future<void> _closePoll(String messageId) async {
+    try {
+      final updated = await widget.service.closePoll(
+        chatId:    _currentChat.id,
+        messageId: messageId,
+      );
+      if (!mounted) return;
+      setState(() { _setMessages(updated.messages); _currentChat = updated; });
+      widget.onChatUpdated(updated);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Опрос завершён'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  Future<void> _sendPoll(_PollDraft draft) async {
+    try {
+      final updated = await widget.service.sendPoll(
+        chatId:        _currentChat.id,
+        question:      draft.question,
+        options:       draft.options,
+        type:          draft.type,
+        isAnonymous:   draft.isAnonymous,
+        canChangeVote: draft.canChangeVote,
+        deadline:      draft.deadline,
+      );
+      if (!mounted) return;
+      setState(() { _setMessages(updated.messages); _currentChat = updated; });
+      widget.onChatUpdated(updated);
+      _scrollToBottom();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка создания опроса: $e'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  void _showCreatePollDialog() {
+    showDialog<_PollDraft>(
+      context: context,
+      builder: (_) => const _CreatePollDialog(),
+    ).then((draft) { if (draft != null) _sendPoll(draft); });
   }
 
   @override
@@ -819,37 +1519,74 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
       body: Column(
         children: [
+          // ── Бар закреплённых сообщений (Telegram-style) ──
+          if (_currentChat.pinnedMessageIds.isNotEmpty)
+            PinnedMessagesBar(
+              pinnedMessages: _currentChat.pinnedMessageIds
+                  .map((id) => _messages.where((m) => m.id == id).firstOrNull)
+                  .whereType<Message>()
+                  .toList(),
+              currentIndex: _pinnedBarIndex,
+              onTap: _onPinnedBarTap,
+              onUnpin: _canPinMessages ? _unpinMessage : null,
+            ),
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              controller: _scrollController,
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final msg = _messages[index];
-                return MessageBubble(
-                  message: msg,
-                  showSenderName: chat.type != ChatType.direct,
-                  myAvatarPath: _myAvatarPath,
-                  // Аватар и его показ — только для личных чатов
-                  showInterlocutorAvatar: chat.type == ChatType.direct,
-                  interlocutorAvatarPath: chat.type == ChatType.direct
-                      ? chat.avatarPath
-                      : null,
-                  isSelected: _selectedIds.contains(msg.id),
-                  isSelectionMode: _isSelectionMode,
-                  onLongPress: () => _showMessageActions(msg),
-                  onTap: () => _toggleSelect(msg.id),
-                  // Комментарии — только для сообществ
-                  showComments: chat.type == ChatType.community,
-                  onOpenComments: chat.type == ChatType.community
-                      ? () => _openComments(msg)
-                      : null,
-                  onReply: () => _startReply(msg),
+            child: Builder(
+              builder: (context) {
+                // Собираем все медиа-вложения (фото + видео) для Telegram-style галереи
+                final allMedia = _messages
+                    .where((m) => m.attachment != null &&
+                        (m.attachment!.type == AttachmentType.image || m.attachment!.type == AttachmentType.video))
+                    .map((m) => m.attachment!)
+                    .toList();
+                return ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  controller: _scrollController,
+                  itemCount: _items.length,
+                  itemBuilder: (context, index) {
+                    final item = _items[index];
+                    return switch (item) {
+                      _SeparatorItem(:final date) => DateSeparator(date: date),
+                      _MsgItem(:final message) => MessageBubble(
+                          key: _keyFor(message.id),
+                          message: message,
+                          showSenderName: chat.type != ChatType.direct,
+                          myAvatarPath: _myAvatarPath,
+                          showInterlocutorAvatar: chat.type == ChatType.direct,
+                          interlocutorAvatarPath: chat.type == ChatType.direct
+                              ? chat.avatarPath
+                              : null,
+                          isSelected: _selectedIds.contains(message.id),
+                          isSelectionMode: _isSelectionMode,
+                          onLongPress: () => _showMessageActions(message),
+                          onTap: () => _toggleSelect(message.id),
+                          showComments: chat.type == ChatType.community,
+                          onOpenComments: chat.type == ChatType.community
+                              ? () => _openComments(message)
+                              : null,
+                          onReply: () => _startReply(message),
+                          allMedia: allMedia,
+                          // ── Упоминания ─────────────────
+                          onMentionTap: _onMentionTap,
+                          // ── Опросы ─────────────────────
+                          currentUserId: widget.auth?.currentUser?.name,
+                          onVotePoll: message.poll != null
+                              ? (ids) => _votePoll(message.id, ids)
+                              : null,
+                          onClosePoll: (message.poll != null && _canPinMessages)
+                              ? () => _closePoll(message.id)
+                              : null,
+                          canClosePoll: message.poll != null && _canPinMessages,
+                        ),
+                    };
+                  },
                 );
               },
             ),
           ),
           if (!_isSelectionMode) ...[
+            // ── Пикер @упоминаний ──────────────────────
+            if (_mentionQuery != null) _buildMentionPicker(),
             if (_replyingTo != null)
               _ReplyIndicator(
                 message: _replyingTo!,
@@ -861,7 +1598,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 message: _editingMessage!,
                 onCancel: _cancelEdit,
               ),
-            if (chat.canWrite)
+            if (chat.canWriteAs(widget.auth?.currentUser?.name))
               MessageInput(
                 controller: _controller,
                 onSend: _sendOrEdit,
@@ -965,5 +1702,291 @@ class _ReplyIndicator extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// ── Данные для создания опроса ────────────────────────────────────────────────
+
+class _PollDraft {
+  final String question;
+  final List<String> options;
+  final PollType type;
+  final bool isAnonymous;
+  final bool canChangeVote;
+  final DateTime? deadline;
+
+  const _PollDraft({
+    required this.question,
+    required this.options,
+    this.type = PollType.single,
+    this.isAnonymous = false,
+    this.canChangeVote = false,
+    this.deadline,
+  });
+}
+
+// ── Диалог создания опроса ───────────────────────────────────────────────────
+
+class _CreatePollDialog extends StatefulWidget {
+  const _CreatePollDialog();
+
+  @override
+  State<_CreatePollDialog> createState() => _CreatePollDialogState();
+}
+
+class _CreatePollDialogState extends State<_CreatePollDialog> {
+  final _questionCtrl = TextEditingController();
+  final List<TextEditingController> _optionCtrls = [
+    TextEditingController(),
+    TextEditingController(),
+  ];
+
+  PollType  _type          = PollType.single;
+  bool      _isAnonymous   = false;
+  bool      _canChangeVote = false;
+  DateTime? _deadline;
+
+  @override
+  void dispose() {
+    _questionCtrl.dispose();
+    for (final c in _optionCtrls) c.dispose();
+    super.dispose();
+  }
+
+  void _addOption() {
+    if (_optionCtrls.length >= 10) return;
+    setState(() => _optionCtrls.add(TextEditingController()));
+  }
+
+  void _removeOption(int index) {
+    if (_optionCtrls.length <= 2) return;
+    setState(() {
+      _optionCtrls[index].dispose();
+      _optionCtrls.removeAt(index);
+    });
+  }
+
+  Future<void> _pickDeadline() async {
+    final now  = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: now.add(const Duration(days: 1)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (!mounted) return;
+    setState(() {
+      _deadline = time == null
+          ? date
+          : DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    });
+  }
+
+  void _submit() {
+    final question = _questionCtrl.text.trim();
+    if (question.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Введите вопрос'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final options = _optionCtrls
+        .map((c) => c.text.trim())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (options.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Добавьте хотя бы 2 варианта'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    Navigator.of(context).pop(_PollDraft(
+      question:      question,
+      options:       options,
+      type:          _type,
+      isAnonymous:   _isAnonymous,
+      canChangeVote: _canChangeVote,
+      deadline:      _deadline,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Заголовок ─────────────────────────────
+              Row(children: [
+                const Icon(Icons.poll_outlined, color: AppColors.primary),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text('Создать опрос',
+                      style: TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.of(context).pop(),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ]),
+              const SizedBox(height: 16),
+              // ── Вопрос ────────────────────────────────
+              TextField(
+                controller: _questionCtrl,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Вопрос *',
+                  hintText: 'Введите вопрос…',
+                  border: OutlineInputBorder(),
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // ── Варианты ──────────────────────────────
+              const Text('Варианты ответа',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 13)),
+              const SizedBox(height: 8),
+              ...List.generate(
+                _optionCtrls.length,
+                (i) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _optionCtrls[i],
+                        decoration: InputDecoration(
+                          labelText:
+                              'Вариант ${i + 1}${i < 2 ? ' *' : ''}',
+                          border: const OutlineInputBorder(),
+                          contentPadding:
+                              const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 10),
+                        ),
+                      ),
+                    ),
+                    if (_optionCtrls.length > 2) ...[
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.remove_circle_outline,
+                            color: Colors.red),
+                        onPressed: () => _removeOption(i),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ]),
+                ),
+              ),
+              if (_optionCtrls.length < 10)
+                TextButton.icon(
+                  onPressed: _addOption,
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Добавить вариант'),
+                  style: TextButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      padding: EdgeInsets.zero),
+                ),
+              const Divider(height: 24),
+              // ── Настройки ─────────────────────────────
+              const Text('Настройки',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 13)),
+              const SizedBox(height: 4),
+              Row(children: [
+                const Expanded(child: Text('Множественный выбор')),
+                Switch(
+                  value: _type == PollType.multiple,
+                  onChanged: (v) => setState(() =>
+                      _type = v ? PollType.multiple : PollType.single),
+                  activeColor: AppColors.primary,
+                ),
+              ]),
+              Row(children: [
+                const Expanded(child: Text('Анонимный опрос')),
+                Switch(
+                  value: _isAnonymous,
+                  onChanged: (v) =>
+                      setState(() => _isAnonymous = v),
+                  activeColor: AppColors.primary,
+                ),
+              ]),
+              Row(children: [
+                const Expanded(
+                    child: Text('Разрешить изменить голос')),
+                Switch(
+                  value: _canChangeVote,
+                  onChanged: (v) =>
+                      setState(() => _canChangeVote = v),
+                  activeColor: AppColors.primary,
+                ),
+              ]),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.schedule,
+                    color: AppColors.primary),
+                title: Text(
+                  _deadline == null
+                      ? 'Без ограничения по времени'
+                      : 'До ${_fmtDt(_deadline!)}',
+                ),
+                trailing: _deadline != null
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () =>
+                            setState(() => _deadline = null),
+                      )
+                    : null,
+                onTap: _pickDeadline,
+              ),
+              const SizedBox(height: 16),
+              // ── Кнопки ────────────────────────────────
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Отмена'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _submit,
+                    style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.primary),
+                    child: const Text('Создать'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _fmtDt(DateTime d) {
+    final dd = d.day.toString().padLeft(2, '0');
+    final mm = d.month.toString().padLeft(2, '0');
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mi = d.minute.toString().padLeft(2, '0');
+    return '$dd.$mm.${d.year} $hh:$mi';
   }
 }

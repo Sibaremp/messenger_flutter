@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -6,19 +8,28 @@ import 'package:file_picker/file_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
+import '../services/api_config.dart' show ApiConfig;
+import 'package:open_filex/open_filex.dart';
+import 'package:share_plus/share_plus.dart';
+import '../services/file_download_service.dart';
+import '../widgets/chat_widgets.dart' show MediaViewerScreen, saveAttachmentToFolder;
 
-/// Полноэкранный раздел комментариев к посту (стиль Telegram).
+/// Полноэкранный раздел комментариев к посту (стиль Telegram-канала).
+/// Пост показывается вверху как карточка, комментарии ниже — как обычный чат:
+/// чужие — слева с аватаром, свои — справа в оранжевом пузырьке.
 class CommentsScreen extends StatefulWidget {
   final Message message;
   final Chat chat;
   final ChatService service;
-  /// Колбэк, возвращающий обновлённое сообщение после добавления/правки/удаления.
-  final Future<Message?> Function(String text, {Attachment? attachment, ReplyInfo? replyTo}) onSend;
+  final Future<Message?> Function(String text,
+      {Attachment? attachment, ReplyInfo? replyTo}) onSend;
   final Future<Message?> Function(String commentId, String newText)? onEdit;
   final Future<Message?> Function(List<String> commentIds)? onDelete;
   /// Если true — встроен в панель (desktop), кнопка «назад» вызывает onBack.
   final bool embedded;
   final VoidCallback? onBack;
+  /// Имя текущего пользователя — для правильного определения isMe у комментариев.
+  final String? currentUserName;
 
   const CommentsScreen({
     super.key,
@@ -30,6 +41,7 @@ class CommentsScreen extends StatefulWidget {
     this.onDelete,
     this.embedded = false,
     this.onBack,
+    this.currentUserName,
   });
 
   @override
@@ -41,35 +53,19 @@ class _CommentsScreenState extends State<CommentsScreen> {
   final _scrollController = ScrollController();
   late Message _message;
 
-  // ── Режим ответа ─────────────────────────────────
   Comment? _replyingTo;
-
-  // ── Режим редактирования ─────────────────────────
   Comment? _editingComment;
-
-  // ── Режим выделения ──────────────────────────────
   final Set<String> _selectedIds = {};
   bool _isSelectionMode = false;
 
-  static const _senderColors = [
+  static const _nameColors = [
     Color(0xFFD32F2F), Color(0xFF388E3C), Color(0xFF1976D2), Color(0xFFE64A19),
     Color(0xFF7B1FA2), Color(0xFF00838F), Color(0xFFC2185B), Color(0xFF455A64),
   ];
 
-  /// Фиксированные цвета имён пользователей (как в Telegram).
-  static const _nameColors = [
-    Color(0xFFE57373), Color(0xFF81C784), Color(0xFF64B5F6), Color(0xFFFFB74D),
-    Color(0xFFBA68C8), Color(0xFF4DD0E1), Color(0xFFF06292), Color(0xFFAED581),
-  ];
-
-  Color _colorForName(String name) {
-    final hash = name.codeUnits.fold<int>(0, (h, c) => h + c);
-    return _nameColors[hash % _nameColors.length];
-  }
-
-  Color _senderColor(String name) {
+  Color _colorFor(String name) {
     final hash = name.codeUnits.fold<int>(0, (h, c) => h * 31 + c);
-    return _senderColors[hash.abs() % _senderColors.length];
+    return _nameColors[hash.abs() % _nameColors.length];
   }
 
   @override
@@ -80,11 +76,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   @override
-  void didUpdateWidget(covariant CommentsScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.message != oldWidget.message) {
-      _message = widget.message;
-    }
+  void didUpdateWidget(covariant CommentsScreen old) {
+    super.didUpdateWidget(old);
+    if (widget.message != old.message) _message = widget.message;
   }
 
   @override
@@ -101,20 +95,16 @@ class _CommentsScreenState extends State<CommentsScreen> {
     });
   }
 
-  // ── Отправка / сохранение ────────────────────────
+  // ── Отправка / редактирование ────────────────────────────────────────
+
   void _sendOrEdit({Attachment? attachment}) {
-    if (_editingComment != null) {
-      _saveEdit();
-    } else {
-      _sendComment(attachment: attachment);
-    }
+    _editingComment != null ? _saveEdit() : _sendComment(attachment: attachment);
   }
 
   Future<void> _sendComment({Attachment? attachment}) async {
     final text = _controller.text.trim();
     if (text.isEmpty && attachment == null) return;
     _controller.clear();
-
     final reply = _replyingTo != null
         ? ReplyInfo(
             messageId: _replyingTo!.id,
@@ -122,12 +112,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
             text: _replyingTo!.text,
           )
         : null;
-
-    final updated = await widget.onSend(
-      text,
-      attachment: attachment,
-      replyTo: reply,
-    );
+    final updated = await widget.onSend(text, attachment: attachment, replyTo: reply);
     if (updated != null && mounted) {
       setState(() {
         _message = updated;
@@ -137,23 +122,13 @@ class _CommentsScreenState extends State<CommentsScreen> {
     }
   }
 
-  // ── Ответ ────────────────────────────────────────
-  void _startReply(Comment comment) {
-    setState(() {
-      _replyingTo = comment;
-      _editingComment = null;
-    });
-  }
-
+  void _startReply(Comment c) =>
+      setState(() { _replyingTo = c; _editingComment = null; });
   void _cancelReply() => setState(() => _replyingTo = null);
 
-  // ── Редактирование ───────────────────────────────
-  void _startEdit(Comment comment) {
-    setState(() {
-      _editingComment = comment;
-      _replyingTo = null;
-    });
-    _controller.text = comment.text;
+  void _startEdit(Comment c) {
+    setState(() { _editingComment = c; _replyingTo = null; });
+    _controller.text = c.text;
     _controller.selection =
         TextSelection.fromPosition(TextPosition(offset: _controller.text.length));
   }
@@ -161,61 +136,43 @@ class _CommentsScreenState extends State<CommentsScreen> {
   Future<void> _saveEdit() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _editingComment == null) return;
-    final editedId = _editingComment!.id;
+    final id = _editingComment!.id;
     setState(() => _editingComment = null);
     _controller.clear();
-
     if (widget.onEdit != null) {
-      final updated = await widget.onEdit!(editedId, text);
-      if (updated != null && mounted) {
-        setState(() => _message = updated);
-      }
+      final updated = await widget.onEdit!(id, text);
+      if (updated != null && mounted) setState(() => _message = updated);
     }
   }
 
-  void _cancelEdit() {
-    setState(() => _editingComment = null);
-    _controller.clear();
-  }
+  void _cancelEdit() { setState(() => _editingComment = null); _controller.clear(); }
 
-  // ── Удаление ─────────────────────────────────────
-  Future<void> _deleteComment(Comment comment) async {
-    if (widget.onDelete != null) {
-      final updated = await widget.onDelete!([comment.id]);
-      if (updated != null && mounted) {
-        setState(() => _message = updated);
-      }
-    }
+  Future<void> _deleteComment(Comment c) async {
+    final updated = await widget.onDelete?.call([c.id]);
+    if (updated != null && mounted) setState(() => _message = updated);
   }
 
   Future<void> _deleteSelected() async {
     final ids = List<String>.from(_selectedIds);
     _exitSelectionMode();
-    if (widget.onDelete != null) {
-      final updated = await widget.onDelete!(ids);
-      if (updated != null && mounted) {
-        setState(() => _message = updated);
-      }
-    }
+    final updated = await widget.onDelete?.call(ids);
+    if (updated != null && mounted) setState(() => _message = updated);
   }
 
-  // ── Пересылка ────────────────────────────────────
-  void _forwardComment(Comment comment) {
-    _showForwardDialog([comment]);
-  }
+  // ── Пересылка ────────────────────────────────────────────────────────
+
+  void _forwardComment(Comment c) => _showForwardDialog([c]);
 
   void _forwardSelected() {
-    final comments = _message.comments
-        .where((c) => _selectedIds.contains(c.id))
-        .toList();
+    final list = _message.comments.where((c) => _selectedIds.contains(c.id)).toList();
     _exitSelectionMode();
-    _showForwardDialog(comments);
+    _showForwardDialog(list);
   }
 
-  void _showForwardDialog(List<Comment> comments) async {
-    final allChats = await widget.service.loadChats();
+  Future<void> _showForwardDialog(List<Comment> list) async {
+    final all = await widget.service.loadChats();
     if (!mounted) return;
-    final others = allChats.where((c) => c.id != widget.chat.id).toList();
+    final others = all.where((c) => c.id != widget.chat.id).toList();
     if (others.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Нет других чатов для пересылки'),
@@ -223,11 +180,11 @@ class _CommentsScreenState extends State<CommentsScreen> {
       ));
       return;
     }
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -249,27 +206,24 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
             ),
-            ...others.map((c) => ListTile(
+            ...others.map((ch) => ListTile(
               leading: CircleAvatar(
                 backgroundColor: AppColors.primary.withValues(alpha: 0.15),
-                child: Text(c.name.isNotEmpty ? c.name[0] : '?',
-                    style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
+                child: Text(ch.name.isNotEmpty ? ch.name[0] : '?',
+                    style: const TextStyle(
+                        color: AppColors.primary, fontWeight: FontWeight.bold)),
               ),
-              title: Text(c.name),
+              title: Text(ch.name),
               onTap: () async {
                 Navigator.pop(context);
-                // Пересылаем каждый комментарий как сообщение
-                for (final cmt in comments) {
+                for (final cmt in list) {
                   await widget.service.sendMessage(
-                    chatId: c.id,
-                    text: cmt.text,
-                    senderName: cmt.senderName,
-                    attachment: cmt.attachment,
-                  );
+                      chatId: ch.id, text: cmt.text,
+                      senderName: cmt.senderName, attachment: cmt.attachment);
                 }
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                    content: Text('Переслано в «${c.name}»'),
+                    content: Text('Переслано в «${ch.name}»'),
                     behavior: SnackBarBehavior.floating,
                     backgroundColor: AppColors.primary,
                   ));
@@ -283,21 +237,12 @@ class _CommentsScreenState extends State<CommentsScreen> {
     );
   }
 
-  // ── Выделение ────────────────────────────────────
-  void _enterSelectionMode(Comment first) {
-    setState(() {
-      _isSelectionMode = true;
-      _selectedIds.add(first.id);
-    });
-  }
+  // ── Выделение ────────────────────────────────────────────────────────
 
-  void _exitSelectionMode() {
-    setState(() {
-      _isSelectionMode = false;
-      _selectedIds.clear();
-    });
-  }
-
+  void _enterSelectionMode(Comment first) =>
+      setState(() { _isSelectionMode = true; _selectedIds.add(first.id); });
+  void _exitSelectionMode() =>
+      setState(() { _isSelectionMode = false; _selectedIds.clear(); });
   void _toggleSelect(String id) {
     setState(() {
       if (_selectedIds.contains(id)) {
@@ -309,13 +254,13 @@ class _CommentsScreenState extends State<CommentsScreen> {
     });
   }
 
-  // ── Контекстное меню ─────────────────────────────
-  void _showCommentActions(Comment comment) {
+  // ── Контекстное меню ─────────────────────────────────────────────────
+
+  void _showCommentActions(Comment c, {bool isMe = false}) {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -324,40 +269,34 @@ class _CommentsScreenState extends State<CommentsScreen> {
             Container(
               width: 40, height: 4,
               decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
+                  color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
             ),
             const SizedBox(height: 8),
-            // Ответить
             ListTile(
               leading: CircleAvatar(
                 backgroundColor: AppColors.primary.withValues(alpha: 0.15),
                 child: const Icon(Icons.reply, color: AppColors.primary, size: 20),
               ),
               title: const Text('Ответить'),
-              onTap: () { Navigator.pop(context); _startReply(comment); },
+              onTap: () { Navigator.pop(context); _startReply(c); },
             ),
-            // Редактировать (только своё)
-            if (comment.isMe && comment.text.isNotEmpty && comment.attachment == null)
+            if (isMe && c.text.isNotEmpty && c.attachment == null)
               ListTile(
                 leading: const CircleAvatar(
                   backgroundColor: AppColors.primary,
                   child: Icon(Icons.edit_outlined, color: Colors.white, size: 20),
                 ),
                 title: const Text('Редактировать'),
-                onTap: () { Navigator.pop(context); _startEdit(comment); },
+                onTap: () { Navigator.pop(context); _startEdit(c); },
               ),
-            // Переслать
             ListTile(
               leading: const CircleAvatar(
                 backgroundColor: AppColors.primary,
                 child: Icon(Icons.shortcut, color: Colors.white, size: 20),
               ),
               title: const Text('Переслать'),
-              onTap: () { Navigator.pop(context); _forwardComment(comment); },
+              onTap: () { Navigator.pop(context); _forwardComment(c); },
             ),
-            // Выделить
             ListTile(
               leading: CircleAvatar(
                 backgroundColor: AppColors.primary.withValues(alpha: 0.15),
@@ -365,18 +304,16 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     color: AppColors.primary, size: 20),
               ),
               title: const Text('Выделить'),
-              onTap: () { Navigator.pop(context); _enterSelectionMode(comment); },
+              onTap: () { Navigator.pop(context); _enterSelectionMode(c); },
             ),
-            // Удалить (только своё)
-            if (comment.isMe)
+            if (isMe)
               ListTile(
                 leading: const CircleAvatar(
                   backgroundColor: Color(0xFFFFEBEE),
                   child: Icon(Icons.delete_outline, color: Colors.red, size: 20),
                 ),
-                title: const Text('Удалить',
-                    style: TextStyle(color: Colors.red)),
-                onTap: () { Navigator.pop(context); _deleteComment(comment); },
+                title: const Text('Удалить', style: TextStyle(color: Colors.red)),
+                onTap: () { Navigator.pop(context); _deleteComment(c); },
               ),
             const SizedBox(height: 8),
           ],
@@ -385,114 +322,78 @@ class _CommentsScreenState extends State<CommentsScreen> {
     );
   }
 
-  // ── Вложения ─────────────────────────────────────
+  // ── Вложения ─────────────────────────────────────────────────────────
+
   Future<void> _pickImage(ImageSource source) async {
-    final picker = ImagePicker();
-    final picked = await picker.pickImage(
-      source: source,
-      maxWidth: 1280,
-      imageQuality: 85,
-    );
+    final picked = await ImagePicker().pickImage(
+        source: source, maxWidth: 1280, imageQuality: 85);
     if (picked == null || !mounted) return;
-    final file = File(picked.path);
-    final size = await file.length();
-    _sendComment(
-      attachment: Attachment(
-        path: picked.path,
-        type: AttachmentType.image,
-        fileName: picked.name,
-        fileSize: size,
-      ),
-    );
+    final size = await File(picked.path).length();
+    _sendComment(attachment: Attachment(
+      path: picked.path, type: AttachmentType.image,
+      fileName: picked.name, fileSize: size,
+    ));
   }
 
   Future<void> _pickDocument() async {
     final result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
-      type: FileType.any,
-      withData: false,
-    );
+        allowMultiple: false, type: FileType.any, withData: false);
     if (result == null || result.files.isEmpty || !mounted) return;
-    final file = result.files.first;
-    if (file.path == null) return;
-    final ext = file.name.split('.').last.toLowerCase();
-    final attachType = kVideoExtensions.contains(ext)
-        ? AttachmentType.video
-        : AttachmentType.document;
-    _sendComment(
-      attachment: Attachment(
-        path: file.path!,
-        type: attachType,
-        fileName: file.name,
-        fileSize: file.size,
-      ),
-    );
+    final f = result.files.first;
+    if (f.path == null) return;
+    final ext = f.name.split('.').last.toLowerCase();
+    _sendComment(attachment: Attachment(
+      path: f.path!,
+      type: kVideoExtensions.contains(ext) ? AttachmentType.video : AttachmentType.document,
+      fileName: f.name, fileSize: f.size,
+    ));
   }
 
   Future<void> _pickVideo() async {
-    final picker = ImagePicker();
-    final picked = await picker.pickVideo(source: ImageSource.gallery);
+    final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
     if (picked == null || !mounted) return;
-    final file = File(picked.path);
-    final size = await file.length();
-    _sendComment(
-      attachment: Attachment(
-        path: picked.path,
-        type: AttachmentType.video,
-        fileName: picked.name,
-        fileSize: size,
-      ),
-    );
+    final size = await File(picked.path).length();
+    _sendComment(attachment: Attachment(
+      path: picked.path, type: AttachmentType.video,
+      fileName: picked.name, fileSize: size,
+    ));
   }
 
   void _showAttachmentOptions() {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 8),
-            Container(
-              width: 40, height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
+            Container(width: 40, height: 4,
+              decoration: BoxDecoration(color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2))),
             const SizedBox(height: 8),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
-                child: Icon(Icons.photo_library, color: Colors.white),
-              ),
+              leading: const CircleAvatar(backgroundColor: AppColors.primary,
+                  child: Icon(Icons.photo_library, color: Colors.white)),
               title: const Text('Галерея'),
               onTap: () { Navigator.pop(context); _pickImage(ImageSource.gallery); },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
-                child: Icon(Icons.camera_alt, color: Colors.white),
-              ),
+              leading: const CircleAvatar(backgroundColor: AppColors.primary,
+                  child: Icon(Icons.camera_alt, color: Colors.white)),
               title: const Text('Камера'),
               onTap: () { Navigator.pop(context); _pickImage(ImageSource.camera); },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
-                child: Icon(Icons.videocam, color: Colors.white),
-              ),
+              leading: const CircleAvatar(backgroundColor: AppColors.primary,
+                  child: Icon(Icons.videocam, color: Colors.white)),
               title: const Text('Видео'),
               onTap: () { Navigator.pop(context); _pickVideo(); },
             ),
             ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: AppColors.primary,
-                child: Icon(Icons.insert_drive_file, color: Colors.white),
-              ),
+              leading: const CircleAvatar(backgroundColor: AppColors.primary,
+                  child: Icon(Icons.insert_drive_file, color: Colors.white)),
               title: const Text('Документ'),
               onTap: () { Navigator.pop(context); _pickDocument(); },
             ),
@@ -503,62 +404,62 @@ class _CommentsScreenState extends State<CommentsScreen> {
     );
   }
 
-  // ── UI ───────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final comments = _message.comments;
-    final subtitle = comments.isEmpty
-        ? 'Комментарии'
+    // Всегда сортируем по времени, чтобы порядок не зависел от порядка добавления
+    final comments = [..._message.comments]
+      ..sort((a, b) => a.time.compareTo(b.time));
+    final countText = comments.isEmpty
+        ? 'Нет комментариев'
         : '${comments.length} ${_commentWord(comments.length)}';
 
     return Scaffold(
+      backgroundColor:
+          isDark ? const Color(0xFF0E0E0E) : const Color(0xFFEFEFEF),
       appBar: _isSelectionMode
           ? AppBar(
               automaticallyImplyLeading: false,
               leading: IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: _exitSelectionMode,
-              ),
+                  icon: const Icon(Icons.close),
+                  onPressed: _exitSelectionMode),
               title: Text('${_selectedIds.length} выбрано'),
               actions: [
                 if (_selectedIds.isNotEmpty) ...[
                   IconButton(
-                    icon: const Icon(Icons.shortcut),
-                    tooltip: 'Переслать',
-                    onPressed: _forwardSelected,
-                  ),
+                      icon: const Icon(Icons.shortcut),
+                      tooltip: 'Переслать',
+                      onPressed: _forwardSelected),
                   IconButton(
-                    icon: const Icon(Icons.delete_outline),
-                    tooltip: 'Удалить',
-                    onPressed: _deleteSelected,
-                  ),
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Удалить',
+                      onPressed: _deleteSelected),
                 ],
               ],
             )
           : AppBar(
-              backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-              foregroundColor: isDark ? Colors.white : Colors.black87,
+              backgroundColor:
+                  isDark ? const Color(0xFF1E1E1E) : AppColors.primary,
+              foregroundColor: Colors.white,
               surfaceTintColor: Colors.transparent,
-              elevation: 0.5,
+              elevation: 0,
               automaticallyImplyLeading: !widget.embedded,
               leading: widget.embedded
                   ? IconButton(
                       icon: const Icon(Icons.arrow_back),
-                      onPressed: widget.onBack,
-                    )
+                      onPressed: widget.onBack)
                   : null,
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('Обсуждение',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                  Text(subtitle,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.normal,
-                        color: isDark ? Colors.white54 : Colors.black45,
-                      )),
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(countText,
+                      style: const TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.normal)),
                 ],
               ),
             ),
@@ -567,42 +468,48 @@ class _CommentsScreenState extends State<CommentsScreen> {
           Expanded(
             child: ListView(
               controller: _scrollController,
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              padding: const EdgeInsets.only(bottom: 8),
               children: [
-                // ── Исходный пост (пузырь) ─────────────────────
-                _PostBubble(
+                // ── Исходный пост (карточка) ─────────────────────────────
+                _PostCard(
                   message: widget.message,
                   chat: widget.chat,
                   isDark: isDark,
-                  nameColor: _colorForName(
-                      widget.message.senderName ?? widget.chat.name),
                 ),
+                // ── Разделитель ──────────────────────────────────────────
+                _DividerPill(
+                  label: comments.isEmpty
+                      ? 'Будьте первым, кто прокомментирует'
+                      : 'Начало обсуждения',
+                  isDark: isDark,
+                ),
+                // ── Комментарии ──────────────────────────────────────────
+                ...comments.map((c) {
+                  final isMe = c.isMe ||
+                      (widget.currentUserName != null &&
+                          widget.currentUserName!.isNotEmpty &&
+                          c.senderName == widget.currentUserName);
+                  return _CommentBubble(
+                    key: ValueKey(c.id),
+                    comment: c,
+                    isDark: isDark,
+                    isMe: isMe,
+                    nameColor: _colorFor(c.senderName),
+                    isSelected: _selectedIds.contains(c.id),
+                    isSelectionMode: _isSelectionMode,
+                    onLongPress: () => _showCommentActions(c, isMe: isMe),
+                    onTap: () => _toggleSelect(c.id),
+                    onReply: () => _startReply(c),
+                  );
+                }),
                 const SizedBox(height: 4),
-                _DividerPill(label: 'Начало обсуждения', isDark: isDark),
-                const SizedBox(height: 4),
-                // ── Комментарии ────────────────────────────────
-                if (comments.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 60),
-                    child: Center(
-                      child: Text('Комментариев пока нет...',
-                          style: TextStyle(
-                            color: isDark ? Colors.white38 : Colors.black38,
-                            fontSize: 14,
-                          )),
-                    ),
-                  )
-                else
-                  ...comments.map((c) => _buildCommentRow(c, isDark)),
-                const SizedBox(height: 8),
               ],
             ),
           ),
+          // ── Панель ввода ─────────────────────────────────────────────
           if (!_isSelectionMode) ...[
-            if (_replyingTo != null)
-              _buildReplyIndicator(isDark),
-            if (_editingComment != null)
-              _buildEditIndicator(isDark),
+            if (_replyingTo != null) _buildReplyIndicator(isDark),
+            if (_editingComment != null) _buildEditIndicator(isDark),
             _buildInput(isDark),
           ],
         ],
@@ -610,26 +517,8 @@ class _CommentsScreenState extends State<CommentsScreen> {
     );
   }
 
-  Widget _buildCommentRow(Comment c, bool isDark) {
-    final nameColor = _colorForName(c.senderName);
-
-    Widget bubble = _CommentBubble(
-      comment: c,
-      isDark: isDark,
-      nameColor: nameColor,
-      senderColor: _senderColor(c.senderName),
-      isSelected: _selectedIds.contains(c.id),
-      isSelectionMode: _isSelectionMode,
-      onLongPress: () => _showCommentActions(c),
-      onTap: () => _toggleSelect(c.id),
-      onReply: () => _startReply(c),
-    );
-
-    return bubble;
-  }
-
   Widget _buildReplyIndicator(bool isDark) {
-    final accentColor = _senderColor(_replyingTo!.senderName);
+    final accent = _colorFor(_replyingTo!.senderName);
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
       decoration: BoxDecoration(
@@ -645,9 +534,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
           Container(
             width: 2.5, height: 34,
             decoration: BoxDecoration(
-              color: accentColor,
-              borderRadius: BorderRadius.circular(2),
-            ),
+                color: accent, borderRadius: BorderRadius.circular(2)),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -657,19 +544,18 @@ class _CommentsScreenState extends State<CommentsScreen> {
               children: [
                 Text(_replyingTo!.senderName,
                     style: TextStyle(
-                      color: accentColor,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600)),
+                        color: accent,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
                 Text(
                   _replyingTo!.text.isEmpty
                       ? (_replyingTo!.attachment != null ? 'Вложение' : '')
                       : _replyingTo!.text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13,
-                    color: isDark ? Colors.white54 : Colors.black45),
+                      fontSize: 13,
+                      color: isDark ? Colors.white54 : Colors.black45),
                 ),
               ],
             ),
@@ -693,18 +579,14 @@ class _CommentsScreenState extends State<CommentsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
-        border: Border(
-          top: BorderSide(color: Theme.of(context).dividerColor),
-        ),
+        border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
       ),
       child: Row(
         children: [
           Container(
             width: 3, height: 36,
             decoration: BoxDecoration(
-              color: AppColors.primary,
-              borderRadius: BorderRadius.circular(2),
-            ),
+                color: AppColors.primary, borderRadius: BorderRadius.circular(2)),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -714,16 +596,13 @@ class _CommentsScreenState extends State<CommentsScreen> {
               children: [
                 const Text('Редактирование',
                     style: TextStyle(
-                      color: AppColors.primary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600)),
+                        color: AppColors.primary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
-                Text(
-                  _editingComment!.text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13),
-                ),
+                Text(_editingComment!.text,
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13)),
               ],
             ),
           ),
@@ -737,48 +616,64 @@ class _CommentsScreenState extends State<CommentsScreen> {
   }
 
   Widget _buildInput(bool isDark) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-        child: Row(
-          children: [
-            if (_editingComment == null)
-              IconButton(
-                icon: const Icon(Icons.attach_file, color: AppColors.subtle),
-                onPressed: _showAttachmentOptions,
-                splashRadius: 20,
-              ),
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardColor,
-                  borderRadius: BorderRadius.circular(20),
+    return Container(
+      color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+          child: Row(
+            children: [
+              if (_editingComment == null)
+                IconButton(
+                  icon: const Icon(Icons.attach_file, color: AppColors.subtle),
+                  onPressed: _showAttachmentOptions,
+                  splashRadius: 20,
                 ),
-                child: TextField(
-                  controller: _controller,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _sendOrEdit(),
-                  maxLines: null,
-                  decoration: const InputDecoration(
-                    hintText: 'Сообщение',
-                    border: InputBorder.none,
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.07)
+                        : const Color(0xFFF5F5F5),
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(
+                      color: isDark
+                          ? Colors.white.withValues(alpha: 0.1)
+                          : Colors.black.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: TextField(
+                    controller: _controller,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendOrEdit(),
+                    maxLines: null,
+                    style: TextStyle(
+                        color: isDark ? Colors.white : Colors.black87),
+                    decoration: InputDecoration(
+                      hintText: 'Комментарий…',
+                      hintStyle: TextStyle(
+                          color: isDark ? Colors.white38 : Colors.black38),
+                      border: InputBorder.none,
+                    ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            CircleAvatar(
-              backgroundColor: AppColors.primary,
-              child: IconButton(
-                icon: Icon(
-                  _editingComment != null ? Icons.check : Icons.send,
-                  color: AppColors.textLight,
+              const SizedBox(width: 8),
+              CircleAvatar(
+                backgroundColor: AppColors.primary,
+                child: IconButton(
+                  icon: Icon(
+                    _editingComment != null ? Icons.check : Icons.send,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                  onPressed: _sendOrEdit,
                 ),
-                onPressed: _sendOrEdit,
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -786,129 +681,197 @@ class _CommentsScreenState extends State<CommentsScreen> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Пузырь исходного поста
+// Карточка исходного поста (Telegram-style)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _PostBubble extends StatelessWidget {
+class _PostCard extends StatelessWidget {
   final Message message;
   final Chat chat;
   final bool isDark;
-  final Color nameColor;
 
-  const _PostBubble({
+  const _PostCard({
     required this.message,
     required this.chat,
     required this.isDark,
-    required this.nameColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bubbleBg =
-        isDark ? const Color(0xFF2A2A2A) : const Color(0xFFFFFFFF);
-    final screenW = MediaQuery.of(context).size.width;
-    final maxW = screenW > 600 ? 500.0 : screenW * 0.85;
+    final bg = isDark ? const Color(0xFF2A2A2A) : Colors.white;
+    final authorName = message.senderName ?? chat.name;
+    final nameHash = authorName.codeUnits.fold<int>(0, (h, c) => h + c);
+    const nameColors = [
+      Color(0xFFD32F2F), Color(0xFF388E3C), Color(0xFF1976D2), Color(0xFFE64A19),
+      Color(0xFF7B1FA2), Color(0xFF00838F), Color(0xFFC2185B), Color(0xFF455A64),
+    ];
+    final nameColor = nameColors[nameHash % nameColors.length];
+    final subtleColor = isDark ? Colors.white38 : Colors.black45;
+    final isAuthor = chat.adminName == authorName ||
+        (message.senderName != null && message.senderName == chat.adminName);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          _buildAvatar(chat),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Container(
-              constraints: BoxConstraints(maxWidth: maxW),
-              decoration: BoxDecoration(
-                color: bubbleBg,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  topRight: Radius.circular(16),
-                  bottomRight: Radius.circular(16),
-                  bottomLeft: Radius.circular(4),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
-                    blurRadius: 4,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    // ── Telegram-style карточка поста ─────────────────────────────────────
+    // Align передаёт дочернему виджету LOOSE-ограничения, поэтому maxWidth
+    // на Container реально работает (без Align ListView даёт tight-constraints
+    // и maxWidth игнорируется).
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 48, 0),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 360),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.08),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        // clipBehavior нужен, чтобы изображение не выходило за скруглённые углы
+        clipBehavior: Clip.hardEdge,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── Шапка: аватар + имя автора + название канала ───────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                    child: Text(
-                      message.senderName ?? chat.name,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13.5,
-                        color: nameColor,
-                      ),
-                    ),
-                  ),
-                  if (message.attachment != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: _buildAttachment(message.attachment!),
-                    ),
-                  if (message.text.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                      child: Text(message.text,
-                          style: TextStyle(
-                            fontSize: 14.5,
-                            color: isDark ? Colors.white : Colors.black87,
-                            height: 1.35,
-                          )),
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-                    child: Row(
+                  _buildAvatar(nameColor),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.visibility_outlined,
-                            size: 13,
-                            color: isDark ? Colors.white38 : Colors.black38),
-                        const SizedBox(width: 3),
-                        Text('—',
-                            style: TextStyle(
-                                fontSize: 11,
-                                color: isDark ? Colors.white38 : Colors.black38)),
-                        const Spacer(),
-                        Text(formatTime(message.time),
-                            style: TextStyle(
-                                fontSize: 11,
-                                color: isDark ? Colors.white38 : Colors.black38)),
+                        Text(
+                          authorName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                            color: nameColor,
+                          ),
+                        ),
+                        // Показываем название сообщества если автор != сообщество
+                        if (message.senderName != null &&
+                            message.senderName != chat.name)
+                          Text(
+                            chat.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 12, color: subtleColor),
+                          ),
                       ],
                     ),
                   ),
                 ],
               ),
             ),
-          ),
-        ],
-      ),
-    );
+            // ── Вложение: изображение внутри карточки ──────────────────────
+            if (message.attachment != null)
+              _buildAttachment(message.attachment!),
+            // ── Текст поста ────────────────────────────────────────────────
+            if (message.text.isNotEmpty)
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  12,
+                  message.attachment != null ? 10 : 2,
+                  12,
+                  8,
+                ),
+                child: Text(
+                  message.text,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    height: 1.45,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
+                ),
+              ),
+            // ── Футер: метка «Автор» + комментарии + время ─────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 12, 10),
+              child: Row(
+                children: [
+                  // Метка «Автор» для постов администратора
+                  if (isAuthor)
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: nameColor.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'Автор',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: nameColor,
+                        ),
+                      ),
+                    ),
+                  const Spacer(),
+                  // Счётчик комментариев
+                  Icon(Icons.chat_bubble_outline_rounded,
+                      size: 13, color: subtleColor),
+                  const SizedBox(width: 3),
+                  Text(
+                    '${message.comments.length}',
+                    style: TextStyle(fontSize: 12, color: subtleColor),
+                  ),
+                  const SizedBox(width: 10),
+                  // Время
+                  Text(
+                    formatTime(message.time),
+                    style: TextStyle(fontSize: 12, color: subtleColor),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ), // Column
+      ), // Container
+    ), // Padding
+    ); // Align
   }
 
-  Widget _buildAvatar(Chat chat) {
-    if (chat.avatarPath != null) {
-      final file = File(chat.avatarPath!);
-      if (file.existsSync()) {
-        return CircleAvatar(radius: 18, backgroundImage: FileImage(file));
+  /// Аватар: сначала аватар отправителя поста, затем аватар сообщества, затем инициалы.
+  Widget _buildAvatar(Color fallbackColor) {
+    final avatarPath = message.senderAvatarPath ?? chat.avatarPath;
+    if (avatarPath != null && avatarPath.isNotEmpty) {
+      if (ApiConfig.isServerMediaPath(avatarPath)) {
+        final url = ApiConfig.resolveMediaUrl(avatarPath);
+        if (url != null) {
+          return CircleAvatar(
+            radius: 18,
+            backgroundColor: fallbackColor.withValues(alpha: 0.18),
+            backgroundImage: NetworkImage(url),
+            onBackgroundImageError: (e, s) {},
+          );
+        }
+      } else if (!kIsWeb) {
+        final file = File(avatarPath);
+        if (file.existsSync()) {
+          return CircleAvatar(radius: 18, backgroundImage: FileImage(file));
+        }
       }
     }
+    final initial = (message.senderName ?? chat.name);
     return CircleAvatar(
       radius: 18,
-      backgroundColor: nameColor.withValues(alpha: 0.2),
+      backgroundColor: fallbackColor.withValues(alpha: 0.2),
       child: Text(
-        chat.name.isNotEmpty ? chat.name[0].toUpperCase() : '?',
+        initial.isNotEmpty ? initial[0].toUpperCase() : '?',
         style: TextStyle(
-          color: nameColor,
+          color: fallbackColor,
           fontWeight: FontWeight.bold,
           fontSize: 15,
         ),
@@ -918,42 +881,86 @@ class _PostBubble extends StatelessWidget {
 
   Widget _buildAttachment(Attachment att) {
     if (att.type == AttachmentType.image) {
-      final file = File(att.path);
-      if (file.existsSync()) {
-        return ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 300),
-          child: Image.file(file, fit: BoxFit.cover, width: double.infinity),
-        );
+      // fit: BoxFit.fitWidth — показываем полностью (без кропа), потолок 640 px.
+      // Изображение обёрнуто в Padding + ClipRRect чтобы были скруглённые углы
+      // и виден фон карточки как лёгкая рамка (Telegram-style).
+      // GestureDetector позволяет открыть полноэкранный просмотр по тапу.
+      Widget wrapImage(BuildContext ctx, Widget img) => GestureDetector(
+            onTap: () => MediaViewerScreen.open(ctx, att),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: img,
+              ),
+            ),
+          );
+
+      if (ApiConfig.isServerMediaPath(att.path)) {
+        final url = ApiConfig.resolveMediaUrl(att.path);
+        if (url != null) {
+          return Builder(builder: (ctx) => wrapImage(ctx, ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 640),
+            child: Image.network(
+              url,
+              fit: BoxFit.fitWidth,
+              width: double.infinity,
+              loadingBuilder: (context, child, progress) =>
+                  progress == null ? child : _loadingBox(),
+              errorBuilder: (context, e, s) => _fallbackBox(att),
+            ),
+          )));
+        }
+      } else if (!kIsWeb) {
+        final file = File(att.path);
+        if (file.existsSync()) {
+          return Builder(builder: (ctx) => wrapImage(ctx, ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 640),
+            child: Image.file(file, fit: BoxFit.fitWidth, width: double.infinity),
+          )));
+        }
       }
     }
+    return _fallbackBox(att);
+  }
+
+  Widget _loadingBox() => Container(
+        height: 180,
+        color: Colors.grey[300],
+        alignment: Alignment.center,
+        child: const SizedBox(
+          width: 28, height: 28,
+          child: CircularProgressIndicator(strokeWidth: 2.5),
+        ),
+      );
+
+  Widget _fallbackBox(Attachment att) {
     final icon = switch (att.type) {
-      AttachmentType.image => Icons.image,
-      AttachmentType.video => Icons.videocam,
+      AttachmentType.image    => Icons.image,
+      AttachmentType.video    => Icons.videocam,
       AttachmentType.document => Icons.insert_drive_file,
     };
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        decoration: BoxDecoration(
-          color: isDark
-              ? Colors.white.withValues(alpha: 0.06)
-              : const Color(0xFFF0F0F0),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 20, color: AppColors.primary),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(att.fileName,
-                  style: const TextStyle(fontSize: 13),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
-            ),
-          ],
-        ),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark
+            ? Colors.white.withValues(alpha: 0.06)
+            : const Color(0xFFF0F0F0),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 22, color: AppColors.primary),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(att.fileName,
+                style: const TextStyle(fontSize: 13),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
       ),
     );
   }
@@ -973,11 +980,11 @@ class _DividerPill extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        margin: const EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
           color: isDark
-              ? Colors.white.withValues(alpha: 0.08)
+              ? Colors.white.withValues(alpha: 0.09)
               : Colors.black.withValues(alpha: 0.06),
           borderRadius: BorderRadius.circular(16),
         ),
@@ -995,14 +1002,15 @@ class _DividerPill extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Пузырь комментария (с поддержкой свайпа, выделения, вложений, ответов)
+// Пузырь комментария (Telegram-style: своё — справа, чужое — слева)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class _CommentBubble extends StatefulWidget {
   final Comment comment;
   final bool isDark;
+  /// Явно вычисленный флаг "мой комментарий" (учитывает currentUserName).
+  final bool isMe;
   final Color nameColor;
-  final Color senderColor;
   final bool isSelected;
   final bool isSelectionMode;
   final VoidCallback onLongPress;
@@ -1010,10 +1018,11 @@ class _CommentBubble extends StatefulWidget {
   final VoidCallback onReply;
 
   const _CommentBubble({
+    super.key,
     required this.comment,
     required this.isDark,
+    required this.isMe,
     required this.nameColor,
-    required this.senderColor,
     required this.isSelected,
     required this.isSelectionMode,
     required this.onLongPress,
@@ -1034,112 +1043,29 @@ class _CommentBubbleState extends State<_CommentBubble> {
   Widget build(BuildContext context) {
     final c = widget.comment;
     final isDark = widget.isDark;
-    final nameColor = widget.nameColor;
-    final timeColor = isDark ? Colors.white38 : Colors.black38;
+    final isMe = widget.isMe;
+    final timeColor = isMe
+        ? const Color(0xB3FFFFFF)
+        : (isDark ? Colors.white38 : Colors.black38);
 
-    final bubbleBg = c.isMe
-        ? (isDark
-            ? AppColors.primary.withValues(alpha: 0.18)
-            : AppColors.primary.withValues(alpha: 0.08))
-        : (isDark
-            ? const Color(0xFF2A2A2A)
-            : const Color(0xFFFFFFFF));
+    // ── Содержимое пузыря ─────────────────────────────────────────────────
+    final bubbleContent = _buildBubble(c, isDark, isMe, timeColor);
 
-    // ── Содержимое пузыря ──────────────────────────
-    final bubbleContent = Container(
-      padding: const EdgeInsets.fromLTRB(12, 7, 12, 6),
-      decoration: BoxDecoration(
-        color: bubbleBg,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(16),
-          topRight: Radius.circular(16),
-          bottomRight: Radius.circular(16),
-          bottomLeft: Radius.circular(4),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.06),
-            blurRadius: 3,
-            offset: const Offset(0, 1),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Имя отправителя
-          Text.rich(
-            TextSpan(children: [
-              if (c.senderGroup != null)
-                TextSpan(
-                  text: '${c.senderGroup}  ',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: widget.senderColor.withValues(alpha: 0.7),
-                  ),
-                ),
-              TextSpan(
-                text: c.senderName,
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                  color: widget.senderColor,
-                ),
-              ),
-            ]),
-          ),
-          // Reply preview
-          if (c.replyTo != null)
-            _CommentReplyPreview(reply: c.replyTo!, isDark: isDark),
-          // Вложение
-          if (c.attachment != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: _CommentAttachment(attachment: c.attachment!, isDark: isDark),
-            ),
-          const SizedBox(height: 3),
-          // Текст + изм. + время
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (c.text.isNotEmpty)
-                Flexible(
-                  child: Text(c.text,
-                      style: TextStyle(
-                        fontSize: 14.5,
-                        color: isDark ? Colors.white : Colors.black87,
-                        height: 1.3,
-                      )),
-                ),
-              const SizedBox(width: 8),
-              if (c.isEdited)
-                Text('изм. ', style: TextStyle(fontSize: 10, color: timeColor)),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 1),
-                child: Text(
-                  formatTime(c.time),
-                  style: TextStyle(fontSize: 11, color: timeColor),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-
-    // ── Строка с аватаром + пузырём ────────────────
+    // ── Строка ────────────────────────────────────────────────────────────
     Widget row = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.isSelectionMode ? widget.onTap : null,
       onLongPress: widget.isSelectionMode ? null : widget.onLongPress,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
+        // width: double.infinity гарантирует, что Row получит ограниченную ширину
+        // даже внутри Stack (который передаёт loose-constraints), тогда Spacer()
+        // корректно отодвигает «свои» пузыри к правому краю.
+        width: double.infinity,
         color: widget.isSelected
             ? AppColors.primary.withValues(alpha: 0.12)
             : Colors.transparent,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
@@ -1151,13 +1077,16 @@ class _CommentBubbleState extends State<_CommentBubble> {
                       padding: const EdgeInsets.only(right: 8),
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 150),
-                        width: 22,
-                        height: 22,
+                        width: 22, height: 22,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: widget.isSelected ? AppColors.primary : Colors.transparent,
+                          color: widget.isSelected
+                              ? AppColors.primary
+                              : Colors.transparent,
                           border: Border.all(
-                            color: widget.isSelected ? AppColors.primary : AppColors.subtle,
+                            color: widget.isSelected
+                                ? AppColors.primary
+                                : AppColors.subtle,
                             width: 2,
                           ),
                         ),
@@ -1168,35 +1097,57 @@ class _CommentBubbleState extends State<_CommentBubble> {
                     )
                   : const SizedBox.shrink(),
             ),
-            // Аватар
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: nameColor.withValues(alpha: 0.2),
-              child: Text(
-                c.senderName.isNotEmpty ? c.senderName[0].toUpperCase() : '?',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: nameColor,
+            // Чужое: аватар слева
+            if (!isMe) ...[
+              CircleAvatar(
+                radius: 17,
+                backgroundColor: widget.nameColor.withValues(alpha: 0.2),
+                child: Text(
+                  c.senderName.isNotEmpty ? c.senderName[0].toUpperCase() : '?',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: widget.nameColor,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 6),
-            // Пузырь
-            Flexible(child: bubbleContent),
-            const SizedBox(width: 40),
+              const SizedBox(width: 6),
+            ],
+            // Своё: отодвигаем пузырь вправо
+            if (isMe) const Spacer(),
+            // Пузырь (ограничен 75% ширины экрана).
+            // Для «своих» — обычный ConstrainedBox (не Flexible), тогда Spacer()
+            // берёт ВСЁ оставшееся место и пузырь прижимается к правому краю.
+            // Для «чужих» — Flexible, чтобы длинный текст не вызывал overflow.
+            if (isMe)
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.75),
+                child: bubbleContent,
+              )
+            else
+              Flexible(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                      maxWidth: MediaQuery.of(context).size.width * 0.75),
+                  child: bubbleContent,
+                ),
+              ),
+            // Чужое: пространство справа чтобы не тянулся на всю ширину
+            if (!isMe) const SizedBox(width: 44),
           ],
         ),
       ),
     );
 
-    // ── Свайп для ответа ───────────────────────────
+    // ── Свайп для ответа ──────────────────────────────────────────────────
     if (!widget.isSelectionMode) {
-      final swipeProgress = (_swipeOffset / _swipeThreshold).clamp(0.0, 1.0);
+      final progress = (_swipeOffset / _swipeThreshold).clamp(0.0, 1.0);
       row = GestureDetector(
-        onHorizontalDragUpdate: (details) {
+        onHorizontalDragUpdate: (d) {
           setState(() {
-            _swipeOffset = (_swipeOffset + details.delta.dx).clamp(0.0, _swipeThreshold + 20);
+            _swipeOffset =
+                (_swipeOffset + d.delta.dx).clamp(0.0, _swipeThreshold + 20);
             if (!_swipeTriggered && _swipeOffset >= _swipeThreshold) {
               _swipeTriggered = true;
               HapticFeedback.lightImpact();
@@ -1205,30 +1156,20 @@ class _CommentBubbleState extends State<_CommentBubble> {
         },
         onHorizontalDragEnd: (_) {
           if (_swipeTriggered) widget.onReply();
-          setState(() {
-            _swipeOffset = 0;
-            _swipeTriggered = false;
-          });
+          setState(() { _swipeOffset = 0; _swipeTriggered = false; });
         },
-        onHorizontalDragCancel: () {
-          setState(() {
-            _swipeOffset = 0;
-            _swipeTriggered = false;
-          });
-        },
+        onHorizontalDragCancel: () =>
+            setState(() { _swipeOffset = 0; _swipeTriggered = false; }),
         child: Stack(
           clipBehavior: Clip.none,
           children: [
             if (_swipeOffset > 4)
               Positioned(
-                left: _swipeOffset - 44,
-                top: 0,
-                bottom: 0,
+                left: _swipeOffset - 44, top: 0, bottom: 0,
                 child: Center(
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 100),
-                    width: 36,
-                    height: 36,
+                    width: 36, height: 36,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: _swipeTriggered
@@ -1237,7 +1178,7 @@ class _CommentBubbleState extends State<_CommentBubble> {
                     ),
                     child: Icon(
                       Icons.reply,
-                      size: 18 + (swipeProgress * 4),
+                      size: 18 + (progress * 4),
                       color: _swipeTriggered ? Colors.white : AppColors.primary,
                     ),
                   ),
@@ -1254,9 +1195,129 @@ class _CommentBubbleState extends State<_CommentBubble> {
 
     return row;
   }
+
+  Widget _buildBubble(
+      Comment c, bool isDark, bool isMe, Color timeColor) {
+    final bg = isMe
+        ? AppColors.chatMe
+        : (isDark ? const Color(0xFF2A2A2A) : Colors.white);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(11, 8, 11, 8),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(16),
+          topRight: const Radius.circular(16),
+          bottomLeft: Radius.circular(isMe ? 16 : 4),
+          bottomRight: Radius.circular(isMe ? 4 : 16),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
+            blurRadius: 3, offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Имя отправителя (только для чужих)
+          if (!isMe) ...[
+            Text(
+              c.senderName,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+                color: widget.nameColor,
+              ),
+            ),
+            const SizedBox(height: 2),
+          ],
+          // Превью ответа
+          if (c.replyTo != null)
+            _CommentReplyPreview(reply: c.replyTo!, isDark: isDark),
+          // Вложение.
+          // Если текста нет — время рисуем поверх изображения (overlay),
+          // чтобы пузырь не раздувался до 75% ширины.
+          // Если текст есть — вложение отдельно, время идёт в строку с текстом.
+          if (c.attachment != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: c.text.isEmpty
+                  ? Stack(
+                      alignment: Alignment.bottomRight,
+                      children: [
+                        _CommentAttachment(
+                            attachment: c.attachment!, isDark: isDark),
+                        Padding(
+                          padding: const EdgeInsets.all(5),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (c.isEdited)
+                                  const Text('изм. ',
+                                      style: TextStyle(
+                                          fontSize: 10, color: Colors.white)),
+                                Text(formatTime(c.time),
+                                    style: const TextStyle(
+                                        fontSize: 11, color: Colors.white)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  : _CommentAttachment(
+                      attachment: c.attachment!, isDark: isDark),
+            ),
+          // Небольшой отступ-разделитель между медиа и подписью
+          if (c.attachment != null && c.text.isNotEmpty)
+            const SizedBox(height: 3),
+          // Подпись / текст + время (показываем если есть текст, или нет вложения вовсе)
+          if (c.text.isNotEmpty || c.attachment == null)
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (c.text.isNotEmpty)
+                  Flexible(
+                    child: Text(
+                      c.text,
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        height: 1.3,
+                        color: isMe
+                            ? AppColors.textLight
+                            : (isDark ? Colors.white : Colors.black87),
+                      ),
+                    ),
+                  ),
+                const SizedBox(width: 6),
+                if (c.isEdited)
+                  Text('изм. ',
+                      style: TextStyle(fontSize: 10, color: timeColor)),
+                Text(formatTime(c.time),
+                    style: TextStyle(fontSize: 11, color: timeColor)),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
 }
 
-// ── Превью ответа в комментарии ─────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// Превью ответа в комментарии
+// ═══════════════════════════════════════════════════════════════════════════════
 
 class _CommentReplyPreview extends StatelessWidget {
   final ReplyInfo reply;
@@ -1272,20 +1333,20 @@ class _CommentReplyPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hash = reply.senderName.codeUnits.fold<int>(0, (h, c) => h * 31 + c);
-    final accentColor = _colors[hash.abs() % _colors.length];
+    final accent = _colors[hash.abs() % _colors.length];
 
     return Container(
-      margin: const EdgeInsets.only(top: 4, bottom: 2),
+      margin: const EdgeInsets.only(top: 2, bottom: 6),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(6),
-        color: accentColor.withValues(alpha: 0.1),
+        color: accent.withValues(alpha: 0.1),
       ),
       child: IntrinsicHeight(
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(width: 2.5, color: accentColor),
+            Container(width: 2.5, color: accent),
             Flexible(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
@@ -1294,18 +1355,15 @@ class _CommentReplyPreview extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(reply.senderName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: accentColor,
+                          fontSize: 12, fontWeight: FontWeight.w600,
+                          color: accent,
                         )),
                     const SizedBox(height: 1),
                     Text(
                       reply.text.isEmpty ? 'Вложение' : reply.text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
                         color: isDark ? Colors.white60 : Colors.black54,
@@ -1322,28 +1380,322 @@ class _CommentReplyPreview extends StatelessWidget {
   }
 }
 
-// ── Превью вложения в комментарии ───────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// Превью вложения в комментарии (с поддержкой сетевых изображений)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-class _CommentAttachment extends StatelessWidget {
+class _CommentAttachment extends StatefulWidget {
   final Attachment attachment;
   final bool isDark;
 
   const _CommentAttachment({required this.attachment, required this.isDark});
 
   @override
+  State<_CommentAttachment> createState() => _CommentAttachmentState();
+}
+
+class _CommentAttachmentState extends State<_CommentAttachment> {
+  StreamSubscription<DownloadProgress>? _sub;
+  DownloadProgress _progress = const DownloadProgress(state: DownloadState.idle);
+
+  Attachment get att => widget.attachment;
+  bool get isDark => widget.isDark;
+  bool get _isRemote => ApiConfig.isServerMediaPath(att.path);
+  bool get _isDoc => att.type == AttachmentType.document;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isRemote && _isDoc) {
+      _sub = FileDownloadService.instance.watch(att.path).listen((p) {
+        if (!mounted) return;
+        setState(() => _progress = p);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  // ── Картинки ─────────────────────────────────────────────────────────────
+
+  @override
   Widget build(BuildContext context) {
-    if (attachment.type == AttachmentType.image) {
-      final file = File(attachment.path);
-      if (file.existsSync()) {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.file(file, width: 200, height: 200, fit: BoxFit.cover),
-        );
+    if (att.type == AttachmentType.image) {
+      void openViewer() => MediaViewerScreen.open(context, att);
+      if (ApiConfig.isServerMediaPath(att.path)) {
+        final url = ApiConfig.resolveMediaUrl(att.path);
+        if (url != null) {
+          return GestureDetector(
+            onTap: openViewer,
+            child: _wrapInFrame(ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                url, width: 200, height: 185, fit: BoxFit.cover,
+                loadingBuilder: (ctx, child, p) => p == null
+                    ? child
+                    : Container(
+                        width: 200, height: 185, color: Colors.grey[300],
+                        alignment: Alignment.center,
+                        child: const SizedBox(
+                          width: 24, height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                errorBuilder: (ctx, e, s) => _brokenImage(),
+              ),
+            )),
+          );
+        }
+      }
+      if (!kIsWeb) {
+        final file = File(att.path);
+        if (file.existsSync()) {
+          return GestureDetector(
+            onTap: openViewer,
+            child: _wrapInFrame(ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.file(file, width: 200, height: 185, fit: BoxFit.cover),
+            )),
+          );
+        }
+      }
+      return _brokenImage();
+    }
+
+    // ── Документы ─────────────────────────────────────────────────────────
+    if (att.type == AttachmentType.document) {
+      return _buildDocWidget(context);
+    }
+
+    return _fallbackIcon();
+  }
+
+  Widget _buildDocWidget(BuildContext context) {
+    final bgColor = isDark
+        ? Colors.white.withValues(alpha: 0.07)
+        : AppColors.background;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final subtleColor = isDark ? Colors.white38 : Colors.black38;
+
+    String subtitle;
+    switch (_progress.state) {
+      case DownloadState.idle:
+        subtitle = att.fileSize != null
+            ? '${att.readableSize} • нажмите, чтобы скачать'
+            : 'Нажмите, чтобы скачать';
+      case DownloadState.downloading:
+        final pct = _progress.progress != null
+            ? ' ${(_progress.progress! * 100).toStringAsFixed(0)}%'
+            : '';
+        subtitle = 'Загрузка…$pct';
+      case DownloadState.completed:
+        subtitle = att.fileSize != null
+            ? '${att.readableSize} • на устройстве'
+            : 'На устройстве';
+      case DownloadState.failed:
+        subtitle = 'Ошибка — нажмите, чтобы повторить';
+    }
+
+    Widget leadingIcon;
+    const sz = 26.0;
+    if (!_isRemote) {
+      leadingIcon = Icon(_docIcon(att.fileName), color: AppColors.primary, size: sz);
+    } else {
+      switch (_progress.state) {
+        case DownloadState.idle:
+        case DownloadState.failed:
+          leadingIcon = Icon(
+            _progress.state == DownloadState.failed
+                ? Icons.refresh
+                : Icons.file_download_outlined,
+            color: AppColors.primary, size: sz,
+          );
+        case DownloadState.downloading:
+          leadingIcon = SizedBox(
+            width: sz, height: sz,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: _progress.progress,
+                  strokeWidth: 2.5,
+                  color: AppColors.primary,
+                ),
+                Icon(Icons.close, color: AppColors.primary, size: 14),
+              ],
+            ),
+          );
+        case DownloadState.completed:
+          leadingIcon = Icon(_docIcon(att.fileName), color: AppColors.primary, size: sz);
       }
     }
-    final icon = switch (attachment.type) {
-      AttachmentType.image => Icons.image,
-      AttachmentType.video => Icons.videocam,
+
+    return InkWell(
+      onTap: _isRemote ? _onDocTap : null,
+      onLongPress: _isRemote ? () => _onDocLongPress(context) : null,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isDark ? Colors.white12 : Colors.black12,
+            width: 0.8,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            leadingIcon,
+            const SizedBox(width: 10),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(att.fileName,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: textColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: TextStyle(fontSize: 11, color: subtleColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onDocTap() async {
+    if (!_isRemote) return;
+    final svc = FileDownloadService.instance;
+    switch (_progress.state) {
+      case DownloadState.idle:
+      case DownloadState.failed:
+        try {
+          await svc.download(att.path, fileName: att.fileName);
+        } catch (_) {}
+      case DownloadState.downloading:
+        await svc.cancel(att.path);
+      case DownloadState.completed:
+        final path = _progress.localPath;
+        if (path != null) await OpenFilex.open(path);
+    }
+  }
+
+  Future<void> _onDocLongPress(BuildContext context) async {
+    final canAct = _progress.state == DownloadState.completed;
+    final localPath = _progress.localPath;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(att.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+        children: [
+          if (canAct)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, 'open'),
+              child: const Row(children: [
+                Icon(Icons.open_in_new, size: 20, color: AppColors.primary),
+                SizedBox(width: 12),
+                Text('Открыть'),
+              ]),
+            ),
+          if (canAct)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, 'share'),
+              child: const Row(children: [
+                Icon(Icons.share_outlined, size: 20, color: AppColors.primary),
+                SizedBox(width: 12),
+                Text('Открыть в программе…'),
+              ]),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'save'),
+            child: const Row(children: [
+              Icon(Icons.download, size: 20, color: AppColors.primary),
+              SizedBox(width: 12),
+              Text('Сохранить в папку'),
+            ]),
+          ),
+          if (canAct)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, 'delete'),
+              child: const Row(children: [
+                Icon(Icons.delete_outline, size: 20, color: Colors.red),
+                SizedBox(width: 12),
+                Text('Удалить', style: TextStyle(color: Colors.red)),
+              ]),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Отмена'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'open' && localPath != null) {
+      await OpenFilex.open(localPath);
+    } else if (action == 'share' && localPath != null) {
+      await Share.shareXFiles([XFile(localPath)]);
+    } else if (action == 'save') {
+      // ignore: use_build_context_synchronously
+      await saveAttachmentToFolder(context, att);
+    } else if (action == 'delete') {
+      await FileDownloadService.instance.removeLocal(att.path);
+    }
+  }
+
+  IconData _docIcon(String name) {
+    final ext = name.split('.').last.toLowerCase();
+    return switch (ext) {
+      'pdf'              => Icons.picture_as_pdf,
+      'doc' || 'docx'    => Icons.description,
+      'xls' || 'xlsx'    => Icons.table_chart,
+      'zip' || 'rar' || '7z' => Icons.folder_zip,
+      'mp3' || 'wav' || 'ogg' => Icons.audio_file,
+      'mp4' || 'mov' || 'avi' => Icons.video_file,
+      _                  => Icons.insert_drive_file,
+    };
+  }
+
+  Widget _wrapInFrame(Widget child) => Container(
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.07)
+              : Colors.black.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(13),
+        ),
+        padding: const EdgeInsets.all(3),
+        child: child,
+      );
+
+  Widget _brokenImage() => Container(
+        width: 200, height: 100,
+        decoration: BoxDecoration(
+          color: isDark ? Colors.white12 : Colors.grey[300],
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Icon(Icons.broken_image, color: Colors.grey),
+      );
+
+  Widget _fallbackIcon() {
+    final icon = switch (att.type) {
+      AttachmentType.image    => Icons.image,
+      AttachmentType.video    => Icons.videocam,
       AttachmentType.document => Icons.insert_drive_file,
     };
     return Container(
@@ -1363,12 +1715,12 @@ class _CommentAttachment extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(attachment.fileName,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                if (attachment.fileSize != null)
-                  Text(attachment.readableSize,
+                Text(att.fileName,
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                if (att.fileSize != null)
+                  Text(att.readableSize,
                       style: TextStyle(
                         fontSize: 11,
                         color: isDark ? Colors.white38 : Colors.black38,
@@ -1382,7 +1734,10 @@ class _CommentAttachment extends StatelessWidget {
   }
 }
 
-/// Склонение слова «комментарий».
+// ═══════════════════════════════════════════════════════════════════════════════
+// Вспомогательная функция
+// ═══════════════════════════════════════════════════════════════════════════════
+
 String _commentWord(int n) {
   final mod10 = n % 10;
   final mod100 = n % 100;

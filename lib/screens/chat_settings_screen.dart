@@ -1,9 +1,11 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models.dart';
 import '../app_constants.dart';
 import '../services/chat_service.dart';
+import '../services/api_config.dart' show ApiConfig;
 
 /// Позволяет редактировать имя, описание и аватар чата.
 /// Возвращает обновлённый [Chat] через [Navigator.pop] при сохранении.
@@ -286,27 +288,59 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   }
 
   Widget _buildAvatar() {
-    if (_avatarPath != null) {
-      final file = File(_avatarPath!);
-      if (file.existsSync()) {
-        return CircleAvatar(
-          radius: 52,
-          backgroundImage: FileImage(file),
-        );
+    if (_avatarPath != null && _avatarPath!.isNotEmpty) {
+      // Серверный путь — грузим через NetworkImage
+      if (ApiConfig.isServerMediaPath(_avatarPath)) {
+        final url = ApiConfig.resolveMediaUrl(_avatarPath);
+        if (url != null) {
+          return CircleAvatar(
+            radius: 52,
+            backgroundImage: NetworkImage(url),
+            backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+          );
+        }
+      }
+      // Локальный файл (только на нативных платформах)
+      if (!kIsWeb) {
+        final file = File(_avatarPath!);
+        if (file.existsSync()) {
+          return CircleAvatar(
+            radius: 52,
+            backgroundImage: FileImage(file),
+          );
+        }
       }
     }
+
+    // Плейсхолдер — инициалы из названия (или иконка для личных чатов)
+    if (widget.chat.type != ChatType.direct) {
+      final words = widget.chat.name
+          .split(RegExp(r'\s+'))
+          .where((w) => w.isNotEmpty)
+          .toList();
+      final initials = words.length >= 2
+          ? '${words[0][0]}${words[1][0]}'.toUpperCase()
+          : widget.chat.name.isNotEmpty
+              ? widget.chat.name[0].toUpperCase()
+              : '?';
+      return CircleAvatar(
+        radius: 52,
+        backgroundColor: AppColors.primary,
+        child: Text(
+          initials,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 36,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      );
+    }
+
     return CircleAvatar(
       radius: 52,
       backgroundColor: AppColors.primary,
-      child: Icon(
-        switch (widget.chat.type) {
-          ChatType.direct    => Icons.person,
-          ChatType.group     => Icons.group,
-          ChatType.community => Icons.campaign,
-        },
-        size: 48,
-        color: Colors.white,
-      ),
+      child: const Icon(Icons.person, size: 48, color: Colors.white),
     );
   }
 

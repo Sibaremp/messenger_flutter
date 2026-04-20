@@ -1,27 +1,12 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'theme.dart' show ThemeProvider, AppThemeMode;
 import 'app_constants.dart' show AppColors;
 import 'package:image_picker/image_picker.dart';
-import 'auth_screen.dart' show AuthService, kCollegeGroups;
+import 'services/auth_service.dart' as svc;
+import 'services/api_config.dart' show ApiConfig;
 import 'services/sim_service.dart';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// pubspec.yaml — добавь:
-//   dependencies:
-//     image_picker: ^1.1.2
-//
-// Android: android/app/src/main/AndroidManifest.xml — внутри <application>:
-//   <activity android:name="com.yalantis.ucrop.UCropActivity"
-//     android:screenOrientation="portrait"
-//     android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
-//
-// iOS: ios/Runner/Info.plist — добавь:
-//   <key>NSPhotoLibraryUsageDescription</key>
-//   <string>Нужен доступ к фото для аватарки</string>
-//   <key>NSCameraUsageDescription</key>
-//   <string>Нужен доступ к камере для аватарки</string>
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Роль пользователя ────────────────────────────────────────────────────────
 
@@ -81,58 +66,20 @@ class UserProfile {
   };
 }
 
-// ─── Расширение AuthService — методы профиля ─────────────────────────────────
-
-extension ProfileStorage on AuthService {
-  static const _keyBio        = 'user_bio';
-  static const _keyAvatarPath = 'user_avatar_path';
-  static const _keyGroup      = 'user_group';
-  static const _keyPhone      = 'user_phone';
-  static const _keyRole       = 'user_role';
-
-  static Future<UserProfile> loadProfile() async {
-    final user       = await AuthService.getUser();
-    final bio        = await AuthService.readExtra(_keyBio);
-    final avatarPath = await AuthService.readExtra(_keyAvatarPath);
-    final group      = await AuthService.readExtra(_keyGroup);
-    final phone      = await AuthService.readExtra(_keyPhone);
-    final roleName   = await AuthService.readExtra(_keyRole);
-    final role = roleName == 'teacher' ? ProfileRole.teacher : ProfileRole.student;
-    return UserProfile(
-      name: user['name'] ?? '',
-      login: user['login'] ?? '',
-      bio: bio ?? '',
-      avatarPath: avatarPath,
-      group: group,
-      phone: phone,
-      role: role,
-    );
+/// Загружает [UserProfile] из данных текущего авторизованного пользователя.
+UserProfile profileFromAuth(svc.AuthUser? user) {
+  if (user == null) {
+    return const UserProfile(name: '', login: '');
   }
-
-  static Future<void> saveProfile(UserProfile profile) async {
-    await AuthService.saveSession(
-      name: profile.name,
-      login: profile.login,
-    );
-    await AuthService.writeExtra(_keyBio, profile.bio);
-    await AuthService.writeExtra(_keyRole, profile.role.name);
-    if (profile.avatarPath != null) {
-      await AuthService.writeExtra(_keyAvatarPath, profile.avatarPath!);
-    } else {
-      await AuthService.deleteExtra(_keyAvatarPath);
-    }
-    if (profile.group != null) {
-      await AuthService.writeExtra(_keyGroup, profile.group!);
-    } else {
-      await AuthService.deleteExtra(_keyGroup);
-    }
-    if (profile.phone != null && profile.phone!.isNotEmpty) {
-      await AuthService.writeExtra(_keyPhone, profile.phone!);
-      await AuthService.addRegisteredPhone(profile.phone!);
-    } else {
-      await AuthService.deleteExtra(_keyPhone);
-    }
-  }
+  return UserProfile(
+    name: user.name,
+    login: user.name,
+    bio: user.bio ?? '',
+    avatarPath: user.avatarUrl,
+    group: user.group,
+    phone: user.phone,
+    role: user.isTeacher ? ProfileRole.teacher : ProfileRole.student,
+  );
 }
 
 // ─── Экран просмотра профиля ─────────────────────────────────────────────────
@@ -153,9 +100,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loadProfile();
   }
 
-  Future<void> _loadProfile() async {
-    final profile = await ProfileStorage.loadProfile();
-    if (mounted) setState(() => _profile = profile);
+  void _loadProfile() {
+    // Profile now comes from AuthService — no async needed
+    // This screen is only used in desktop mode via responsive_shell
   }
 
   Future<void> _openEdit() async {
@@ -172,11 +119,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _logout() async {
-    await AuthService.logout();
-    if (!mounted) return;
-    // Возвращаем true — ChatListScreen сам выполнит навигацию к AuthScreen
-    // с правильным onLoginSuccess. Прямой push AuthScreen() здесь приведёт
-    // к отсутствию колбэка и зависшему спиннеру после входа.
+    // Возвращаем true — вызывающий экран выполнит навигацию к AuthScreen
     Navigator.of(context).pop(true);
   }
 
@@ -327,8 +270,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
 class EditProfileScreen extends StatefulWidget {
   final UserProfile profile;
+  final svc.AuthService? auth;
 
-  const EditProfileScreen({super.key, required this.profile});
+  const EditProfileScreen({super.key, required this.profile, this.auth});
 
   @override
   State<EditProfileScreen> createState() => _EditProfileScreenState();
@@ -535,12 +479,35 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
     setState(() => _isSaving = true);
 
+    // Если выбран новый локальный аватар — заливаем его на сервер.
+    // Если аватар убран → передаём явный пустой avatarUrl для очистки.
+    String? serverAvatarUrl;
+    final currentAvatar = _avatarPath;
+    try {
+      if (currentAvatar != null &&
+          currentAvatar.isNotEmpty &&
+          !ApiConfig.isServerMediaPath(currentAvatar) &&
+          widget.auth != null) {
+        // Локальный путь — нужна загрузка
+        serverAvatarUrl = await widget.auth!.uploadAvatar(currentAvatar);
+      } else {
+        serverAvatarUrl = currentAvatar; // либо уже серверный путь, либо null
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось загрузить аватар: $e')),
+      );
+      return;
+    }
+
     final phone = _phoneController.text.trim();
     final updated = widget.profile.copyWith(
       name: name,
       bio: _bioController.text.trim(),
-      avatarPath: _avatarPath,
-      clearAvatar: _avatarPath == null,
+      avatarPath: serverAvatarUrl,
+      clearAvatar: serverAvatarUrl == null,
       group: _selectedGroup,
       clearGroup: _selectedGroup == null,
       phone: phone.isEmpty ? null : phone,
@@ -548,7 +515,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       role: _selectedRole,
     );
 
-    await ProfileStorage.saveProfile(updated);
+    if (widget.auth != null) {
+      await widget.auth!.updateProfile(
+        name: updated.name,
+        bio: updated.bio,
+        phone: updated.phone,
+        avatarUrl: updated.avatarPath,
+      );
+    }
 
     if (!mounted) return;
     Navigator.pop(context, updated);
@@ -739,13 +713,28 @@ class ProfileAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (avatarPath != null) {
-      final file = File(avatarPath!);
-      if (file.existsSync()) {
-        return CircleAvatar(
-          radius: radius,
-          backgroundImage: FileImage(file),
-        );
+    final path = avatarPath;
+    if (path != null && path.isNotEmpty) {
+      // Серверный путь (/uploads/... или абсолютный URL) → NetworkImage
+      if (ApiConfig.isServerMediaPath(path)) {
+        final url = ApiConfig.resolveMediaUrl(path);
+        if (url != null) {
+          return CircleAvatar(
+            radius: radius,
+            backgroundColor: AppColors.primary.withValues(alpha: 0.2),
+            backgroundImage: NetworkImage(url),
+            onBackgroundImageError: (_, __) {},
+          );
+        }
+      } else if (!kIsWeb) {
+        // Локальный файл устройства (на web dart:io — stub).
+        final file = File(path);
+        if (file.existsSync()) {
+          return CircleAvatar(
+            radius: radius,
+            backgroundImage: FileImage(file),
+          );
+        }
       }
     }
     return CircleAvatar(
@@ -1148,8 +1137,9 @@ class _GroupPickerField extends StatelessWidget {
 
 class GroupPickerScreen extends StatefulWidget {
   final String? current;
+  final List<String> groups;
 
-  const GroupPickerScreen({super.key, this.current});
+  const GroupPickerScreen({super.key, this.current, this.groups = const []});
 
   @override
   State<GroupPickerScreen> createState() => _GroupPickerScreenState();
@@ -1157,11 +1147,12 @@ class GroupPickerScreen extends StatefulWidget {
 
 class _GroupPickerScreenState extends State<GroupPickerScreen> {
   final _searchController = TextEditingController();
-  List<String> _filtered = kCollegeGroups;
+  late List<String> _filtered;
 
   @override
   void initState() {
     super.initState();
+    _filtered = widget.groups;
     _searchController.addListener(_onSearch);
   }
 
@@ -1175,8 +1166,8 @@ class _GroupPickerScreenState extends State<GroupPickerScreen> {
     final q = _searchController.text.trim().toUpperCase();
     setState(() {
       _filtered = q.isEmpty
-          ? kCollegeGroups
-          : kCollegeGroups.where((g) => g.toUpperCase().contains(q)).toList();
+          ? widget.groups
+          : widget.groups.where((g) => g.toUpperCase().contains(q)).toList();
     });
   }
 

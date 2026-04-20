@@ -1,164 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'services/sim_service.dart';
-import 'app_constants.dart' show AppColors;
+import 'services/auth_service.dart' as svc;
 import 'theme.dart' show ThemeProvider, AppThemeMode;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// pubspec.yaml:
-//   dependencies:
-//     flutter_secure_storage: ^9.2.2
-//
-// android/app/build.gradle:
-//   minSdkVersion 18
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─── Список учебных групп колледжа ───────────────────────────────────────────
-// Публичная константа — используется в auth_screen и profile_screen
-
-const kCollegeGroups = <String>[
-  'ИС-21', 'ИС-22', 'ИС-23', 'ИС-24',
-  'ПИ-21', 'ПИ-22', 'ПИ-23', 'ПИ-24',
-  'КБ-21', 'КБ-22', 'КБ-23',
-  'ВТ-21', 'ВТ-22', 'ВТ-23',
-  'МТ-21', 'МТ-22', 'МТ-23',
-  'ЭМ-21', 'ЭМ-22', 'ЭМ-23',
-  'БУ-21', 'БУ-22',
-  'ТУ-21', 'ТУ-22',
-  'ДИ-21', 'ДИ-22',
-];
-
-// ─── Ключи хранилища ─────────────────────────────────────────────────────────
-
-class _StorageKeys {
-  const _StorageKeys._();
-
-  static const isLoggedIn = 'is_logged_in';
-  static const userName = 'user_name';
-  static const userLogin = 'user_login';
-  static const registeredName = 'registered_name';
-  static const registeredLogin = 'registered_login';
-  static const registeredPassword = 'registered_password';
-  static const registeredGroup = 'user_group';   // совпадает с ProfileStorage._keyGroup
-  static const registeredPhone = 'user_phone';   // совпадает с ProfileStorage._keyPhone
-  static const registeredRole  = 'user_role';    // совпадает с ProfileStorage._keyRole
-  static const allRegisteredPhones = 'all_registered_phones'; // список всех зарег. номеров
-}
-
-// ─── Сервис авторизации ───────────────────────────────────────────────────────
-
-class AuthService {
-  static final _storage = FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-  );
-
-  static Future<void> saveSession({
-    required String name,
-    required String login,
-  }) async {
-    await _storage.write(key: _StorageKeys.isLoggedIn, value: 'true');
-    await _storage.write(key: _StorageKeys.userName, value: name);
-    await _storage.write(key: _StorageKeys.userLogin, value: login);
-  }
-
-  static Future<bool> isLoggedIn() async {
-    final value = await _storage.read(key: _StorageKeys.isLoggedIn);
-    return value == 'true';
-  }
-
-  static Future<Map<String, String>> getUser() async {
-    final name = await _storage.read(key: _StorageKeys.userName) ?? '';
-    final login = await _storage.read(key: _StorageKeys.userLogin) ?? '';
-    return {'name': name, 'login': login};
-  }
-
-  static Future<void> saveRegistration({
-    required String name,
-    required String login,
-    required String password,
-    required String group,
-    required String phone,
-    String role = 'student',
-  }) async {
-    await _storage.write(key: _StorageKeys.registeredName, value: name);
-    await _storage.write(key: _StorageKeys.registeredLogin, value: login);
-    await _storage.write(key: _StorageKeys.registeredPassword, value: password);
-    await _storage.write(key: _StorageKeys.registeredGroup, value: group);
-    await _storage.write(key: _StorageKeys.registeredPhone, value: phone);
-    await _storage.write(key: _StorageKeys.registeredRole, value: role);
-    await addRegisteredPhone(phone); // добавляем в общий реестр
-  }
-
-  // ── Нормализация номера (только цифры) ───────────────────────────────────
-  static String normalizePhone(String phone) =>
-      phone.replaceAll(RegExp(r'\D'), '');
-
-  // ── Реестр зарегистрированных номеров ─────────────────────────────────────
-  // Хранит все номера, когда-либо зарегистрированные на этом устройстве.
-  // В реальном приложении это был бы серверный запрос.
-
-  static Future<void> addRegisteredPhone(String phone) async {
-    final normalized = normalizePhone(phone);
-    if (normalized.isEmpty) return;
-    final existing =
-        await _storage.read(key: _StorageKeys.allRegisteredPhones) ?? '';
-    final phones =
-        existing.isEmpty ? <String>[] : existing.split(',');
-    if (!phones.contains(normalized)) {
-      phones.add(normalized);
-      await _storage.write(
-          key: _StorageKeys.allRegisteredPhones,
-          value: phones.join(','));
-    }
-  }
-
-  static Future<Set<String>> getRegisteredPhones() async {
-    final stored =
-        await _storage.read(key: _StorageKeys.allRegisteredPhones) ?? '';
-    if (stored.isEmpty) return {};
-    return stored.split(',').toSet();
-  }
-
-  static Future<bool> checkCredentials({
-    required String login,
-    required String password,
-  }) async {
-    final savedLogin =
-        await _storage.read(key: _StorageKeys.registeredLogin) ?? '';
-    final savedPassword =
-        await _storage.read(key: _StorageKeys.registeredPassword) ?? '';
-    return login.trim() == savedLogin && password == savedPassword;
-  }
-
-  static Future<String> getRegisteredName() async {
-    return await _storage.read(key: _StorageKeys.registeredName) ?? '';
-  }
-
-  static Future<void> logout() async {
-    await _storage.delete(key: _StorageKeys.isLoggedIn);
-    await _storage.delete(key: _StorageKeys.userName);
-    await _storage.delete(key: _StorageKeys.userLogin);
-  }
-
-  // Методы для хранения произвольных данных профиля (используются ProfileStorage)
-  static Future<String?> readExtra(String key) async {
-    return await _storage.read(key: key);
-  }
-
-  static Future<void> writeExtra(String key, String value) async {
-    await _storage.write(key: key, value: value);
-  }
-
-  static Future<void> deleteExtra(String key) async {
-    await _storage.delete(key: key);
-  }
-}
-
 // ─── AuthGate — точка входа в приложение ─────────────────────────────────────
-//
-// Используется в main.dart как home:
-//   home: AuthGate(homeScreen: const ChatListScreen()),
 //
 // При запуске проверяет сохранённую сессию:
 //   - есть сессия  → сразу открывает homeScreen
@@ -166,44 +12,22 @@ class AuthService {
 
 class AuthGate extends StatelessWidget {
   final Widget homeScreen;
+  final svc.AuthService auth;
 
-  const AuthGate({super.key, required this.homeScreen});
+  const AuthGate({super.key, required this.homeScreen, required this.auth});
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: AuthService.isLoggedIn(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const _SplashScreen();
-        }
-        if (snapshot.data == true) return homeScreen;
-        return AuthScreen(
-          onLoginSuccess: () {
-            // После успешного входа заменяем AuthScreen на homeScreen
-            Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => homeScreen),
-              (_) => false,
-            );
-          },
+    // Если сессия восстановлена в main.dart, сразу открываем чат
+    if (auth.currentUser != null) return homeScreen;
+    return AuthScreen(
+      auth: auth,
+      onLoginSuccess: () {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => homeScreen),
+          (_) => false,
         );
       },
-    );
-  }
-}
-
-// ─── Сплэш ───────────────────────────────────────────────────────────────────
-
-class _SplashScreen extends StatelessWidget {
-  const _SplashScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFFD4765B),
-      body: Center(
-        child: Icon(Icons.chat_bubble_rounded, size: 64, color: Colors.white),
-      ),
     );
   }
 }
@@ -211,9 +35,10 @@ class _SplashScreen extends StatelessWidget {
 // ─── Экран авторизации ────────────────────────────────────────────────────────
 
 class AuthScreen extends StatefulWidget {
+  final svc.AuthService auth;
   final VoidCallback? onLoginSuccess;
 
-  const AuthScreen({super.key, this.onLoginSuccess});
+  const AuthScreen({super.key, required this.auth, this.onLoginSuccess});
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -345,13 +170,17 @@ class _AuthScreenState extends State<AuthScreen>
                       SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
                         child: _LoginForm(
+                          auth: widget.auth,
                           tabController: _tabController,
                           onLoginSuccess: widget.onLoginSuccess ?? () {},
                         ),
                       ),
                       SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-                        child: _RegisterForm(tabController: _tabController),
+                        child: _RegisterForm(
+                          auth: widget.auth,
+                          tabController: _tabController,
+                        ),
                       ),
                     ],
                   ),
@@ -368,10 +197,12 @@ class _AuthScreenState extends State<AuthScreen>
 // ─── Форма входа ──────────────────────────────────────────────────────────────
 
 class _LoginForm extends StatefulWidget {
+  final svc.AuthService auth;
   final TabController tabController;
   final VoidCallback onLoginSuccess;
 
   const _LoginForm({
+    required this.auth,
     required this.tabController,
     required this.onLoginSuccess,
   });
@@ -385,10 +216,8 @@ class _LoginFormState extends State<_LoginForm> {
   final _loginController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  bool _usePhone = false;
   bool _obscurePassword = true;
   bool _isLoading = false;
-  bool _simLoading = false;
 
   @override
   void dispose() {
@@ -397,72 +226,12 @@ class _LoginFormState extends State<_LoginForm> {
     super.dispose();
   }
 
-  Future<void> _fillFromSim() async {
-    setState(() => _simLoading = true);
-    final result = await SimService.fetchSimCards();
-    if (!mounted) return;
-    setState(() => _simLoading = false);
-
-    switch (result.status) {
-      case SimResult.unsupported:
-        _snack('Определение номера SIM недоступно');
-      case SimResult.permissionDenied:
-        _snack('Нет доступа к данным телефона');
-      case SimResult.permissionPermanentlyDenied:
-        _snack('Разрешение отклонено. Откройте настройки.',
-            action: SnackBarAction(label: 'Настройки', onPressed: SimService.openSettings));
-      case SimResult.noSimFound:
-        _snack('SIM-карта не обнаружена');
-      case SimResult.error:
-        _snack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
-      case SimResult.success:
-        final sims = result.simCards;
-        if (sims.isEmpty) { _snack('SIM-карта не обнаружена'); return; }
-        final sim = sims.length == 1
-            ? sims.first
-            : await _pickSim(sims);
-        if (sim != null && sim.phoneNumber?.isNotEmpty == true) {
-          _loginController.text = sim.phoneNumber!;
-        }
-    }
-  }
-
-  Future<SimCard?> _pickSim(List<SimCard> sims) async {
-    return showModalBottomSheet<SimCard>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            const Text('Выберите SIM-карту',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 8),
-            ...sims.map((sim) => ListTile(
-              leading: const Icon(Icons.sim_card_outlined, color: Color(0xFFD4765B)),
-              title: Text(sim.slotLabel),
-              subtitle: Text(sim.displayInfo),
-              trailing: sim.phoneNumber != null
-                  ? Text(sim.phoneNumber!, style: const TextStyle(fontSize: 13))
-                  : const Text('номер неизвестен',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
-              onTap: () => Navigator.pop(context, sim),
-            )),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _snack(String text, {SnackBarAction? action}) {
+  void _snack(String text, {Color? color}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(text),
+      backgroundColor: color,
       behavior: SnackBarBehavior.floating,
-      action: action,
     ));
   }
 
@@ -470,35 +239,21 @@ class _LoginFormState extends State<_LoginForm> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
 
-    await Future.delayed(const Duration(milliseconds: 500));
-    if (!mounted) return;
-
-    final ok = await AuthService.checkCredentials(
-      login: _loginController.text.trim(),
-      password: _passwordController.text,
-    );
-
-    if (!mounted) return;
-
-    if (ok) {
-      final name = await AuthService.getRegisteredName();
-      await AuthService.saveSession(
-        name: name,
-        login: _loginController.text.trim(),
+    try {
+      await widget.auth.login(
+        name: _loginController.text.trim(),
+        password: _passwordController.text,
       );
       if (!mounted) return;
-      // Уведомляем родителя — он самостоятельно откроет нужный экран
       widget.onLoginSuccess();
-    } else {
-      setState(() => _isLoading = false);
+    } on svc.AuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Неверный логин или пароль'),
-          backgroundColor: Colors.red[700],
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      setState(() => _isLoading = false);
+      _snack(e.message, color: Colors.red[700]);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _snack('Ошибка подключения к серверу', color: Colors.red[700]);
     }
   }
 
@@ -508,31 +263,13 @@ class _LoginFormState extends State<_LoginForm> {
       key: _formKey,
       child: Column(
         children: [
-          // Переключатель Email / Телефон — только на Android
-          if (SimService.isSupported) ...[
-            _LoginToggle(
-              usePhone: _usePhone,
-              onChanged: (val) => setState(() {
-                _usePhone = val;
-                _loginController.clear();
-              }),
-            ),
-            const SizedBox(height: 16),
-          ],
-          if (_usePhone && SimService.isSupported)
-            _PhoneField(
-              controller: _loginController,
-              onSimTap: _fillFromSim,
-              simLoading: _simLoading,
-            )
-          else
-            _AuthField(
-              controller: _loginController,
-              label: 'Email',
-              icon: Icons.email_outlined,
-              keyboardType: TextInputType.emailAddress,
-              validator: _validateEmail,
-            ),
+          _AuthField(
+            controller: _loginController,
+            label: 'Имя пользователя',
+            icon: Icons.person_outline,
+            validator: (v) =>
+                (v == null || v.trim().isEmpty) ? 'Введите имя' : null,
+          ),
           const SizedBox(height: 16),
           _AuthField(
             controller: _passwordController,
@@ -569,9 +306,10 @@ class _LoginFormState extends State<_LoginForm> {
 // ─── Форма регистрации ────────────────────────────────────────────────────────
 
 class _RegisterForm extends StatefulWidget {
+  final svc.AuthService auth;
   final TabController tabController;
 
-  const _RegisterForm({required this.tabController});
+  const _RegisterForm({required this.auth, required this.tabController});
 
   @override
   State<_RegisterForm> createState() => _RegisterFormState();
@@ -580,34 +318,65 @@ class _RegisterForm extends StatefulWidget {
 class _RegisterFormState extends State<_RegisterForm> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
-  final _loginController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
   final _phoneController = TextEditingController();
+  final _emailController = TextEditingController();
 
   String? _selectedGroup;
-  String _selectedRole = 'student'; // 'student' или 'teacher'
+  String _selectedRole = 'student';
   bool _groupTouched = false;
 
-  bool _usePhone = false;
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
   bool _simLoading = false;
 
+  /// Группы, загруженные с сервера.
+  List<String> _serverGroups = [];
+  bool _groupsLoading = true;
+  String? _groupsError;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGroups();
+  }
+
+  Future<void> _loadGroups() async {
+    setState(() {
+      _groupsLoading = true;
+      _groupsError = null;
+    });
+    try {
+      final groups = await widget.auth.loadGroups();
+      if (!mounted) return;
+      setState(() {
+        _serverGroups = groups;
+        _groupsLoading = false;
+        _groupsError = groups.isEmpty ? 'Список групп пуст' : null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _groupsLoading = false;
+        _groupsError = 'Не удалось загрузить группы. Проверьте подключение.';
+      });
+    }
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
-    _loginController.dispose();
     _passwordController.dispose();
     _confirmController.dispose();
     _phoneController.dispose();
+    _emailController.dispose();
     super.dispose();
   }
 
   // ── Чтение номера из SIM ─────────────────────────────────────────────────
 
-  /// Заполняет [target] контроллер номером из SIM-карты.
   Future<void> _fillFromSim({TextEditingController? target}) async {
     final ctrl = target ?? _phoneController;
     setState(() => _simLoading = true);
@@ -617,11 +386,11 @@ class _RegisterFormState extends State<_RegisterForm> {
 
     switch (result.status) {
       case SimResult.unsupported:
-        _showSimSnack('Определение номера SIM недоступно на этой платформе');
+        _snack('Определение номера SIM недоступно на этой платформе');
       case SimResult.permissionDenied:
-        _showSimSnack('Нет доступа к данным телефона');
+        _snack('Нет доступа к данным телефона');
       case SimResult.permissionPermanentlyDenied:
-        _showSimSnack(
+        _snack(
           'Разрешение отклонено. Откройте настройки приложения.',
           action: SnackBarAction(
             label: 'Настройки',
@@ -629,9 +398,9 @@ class _RegisterFormState extends State<_RegisterForm> {
           ),
         );
       case SimResult.noSimFound:
-        _showSimSnack('SIM-карта не обнаружена или не вставлена');
+        _snack('SIM-карта не обнаружена или не вставлена');
       case SimResult.error:
-        _showSimSnack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
+        _snack('Ошибка: ${result.errorMessage ?? "неизвестная"}');
       case SimResult.success:
         final sims = result.simCards;
         if (sims.length == 1) {
@@ -645,9 +414,9 @@ class _RegisterFormState extends State<_RegisterForm> {
   void _applySimCard(SimCard sim, TextEditingController ctrl) {
     if (sim.phoneNumber?.isNotEmpty == true) {
       ctrl.text = sim.phoneNumber!;
-      _showSimSnack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
+      _snack('Номер получен: ${sim.phoneNumber} (${sim.displayInfo})');
     } else {
-      _showSimSnack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
+      _snack('Оператор: ${sim.displayInfo}. Введите номер вручную.');
     }
   }
 
@@ -687,10 +456,11 @@ class _RegisterFormState extends State<_RegisterForm> {
     );
   }
 
-  void _showSimSnack(String text, {SnackBarAction? action}) {
+  void _snack(String text, {SnackBarAction? action, Color? color}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(text),
+      backgroundColor: color,
       behavior: SnackBarBehavior.floating,
       action: action,
     ));
@@ -699,32 +469,39 @@ class _RegisterFormState extends State<_RegisterForm> {
   Future<void> _submit() async {
     setState(() => _groupTouched = true);
     if (!_formKey.currentState!.validate()) return;
-    // Группа обязательна только для студентов
     if (_selectedRole == 'student' && _selectedGroup == null) return;
+
+    final phone = _phoneController.text.trim();
+    final email = _emailController.text.trim();
+    if (phone.isEmpty && email.isEmpty) {
+      _snack('Укажите телефон или email', color: Colors.red[700]);
+      return;
+    }
+
     setState(() => _isLoading = true);
 
-    await AuthService.saveRegistration(
-      name: _nameController.text.trim(),
-      login: _loginController.text.trim(),
-      password: _passwordController.text,
-      group: _selectedGroup ?? '',
-      phone: _phoneController.text.trim(),
-      role: _selectedRole,
-    );
-
-    await Future.delayed(const Duration(milliseconds: 500));
-    if (!mounted) return;
-
-    setState(() => _isLoading = false);
-    widget.tabController.animateTo(0);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Аккаунт создан! Теперь войдите.'),
-        backgroundColor: Color(0xFFD4765B),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    try {
+      await widget.auth.register(
+        name: _nameController.text.trim(),
+        password: _passwordController.text,
+        role: _selectedRole,
+        group: _selectedGroup,
+        phone: phone.isNotEmpty ? phone : null,
+        email: email.isNotEmpty ? email : null,
+      );
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      widget.tabController.animateTo(0);
+      _snack('Аккаунт создан! Теперь войдите.', color: const Color(0xFFD4765B));
+    } on svc.AuthException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _snack(e.message, color: Colors.red[700]);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _snack('Ошибка подключения к серверу', color: Colors.red[700]);
+    }
   }
 
   @override
@@ -755,6 +532,10 @@ class _RegisterFormState extends State<_RegisterForm> {
             _GroupSelectField(
               value: _selectedGroup,
               showError: _groupTouched && _selectedGroup == null,
+              groups: _serverGroups,
+              isLoading: _groupsLoading,
+              errorText: _groupsError,
+              onRetry: _loadGroups,
               onChanged: (g) => setState(() => _selectedGroup = g),
             ),
           ],
@@ -767,31 +548,23 @@ class _RegisterFormState extends State<_RegisterForm> {
               simLoading: _simLoading,
             ),
           ],
+          // ── Email (альтернатива телефону) ─────────────────────
           const SizedBox(height: 12),
-          // Вход по логину: Email или Телефон (телефон — только на Android)
-          if (SimService.isSupported)
-            _LoginToggle(
-              usePhone: _usePhone,
-              onChanged: (val) => setState(() {
-                _usePhone = val;
-                _loginController.clear();
-              }),
-            ),
-          const SizedBox(height: 12),
-          if (_usePhone && SimService.isSupported)
-            _PhoneField(
-              controller: _loginController,
-              onSimTap: () => _fillFromSim(target: _loginController),
-              simLoading: _simLoading,
-            )
-          else
-            _AuthField(
-              controller: _loginController,
-              label: 'Email',
-              icon: Icons.email_outlined,
-              keyboardType: TextInputType.emailAddress,
-              validator: _validateEmail,
-            ),
+          _AuthField(
+            controller: _emailController,
+            label: SimService.isSupported
+                ? 'Email (или телефон выше)'
+                : 'Email',
+            icon: Icons.email_outlined,
+            keyboardType: TextInputType.emailAddress,
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return null;
+              final email = v.trim();
+              final re = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+              if (!re.hasMatch(email)) return 'Некорректный email';
+              return null;
+            },
+          ),
           const SizedBox(height: 12),
           _AuthField(
             controller: _passwordController,
@@ -832,91 +605,18 @@ class _RegisterFormState extends State<_RegisterForm> {
   }
 }
 
-// ─── Переключатель Email / Телефон ────────────────────────────────────────────
+// ─── Валидаторы ──────────────────────────────────────────────────────────────
 
-class _LoginToggle extends StatelessWidget {
-  final bool usePhone;
-  final ValueChanged<bool> onChanged;
-
-  const _LoginToggle({required this.usePhone, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        _ToggleChip(
-          label: 'Email',
-          icon: Icons.email_outlined,
-          selected: !usePhone,
-          onTap: () => onChanged(false),
-        ),
-        const SizedBox(width: 8),
-        _ToggleChip(
-          label: 'Телефон',
-          icon: Icons.phone_outlined,
-          selected: usePhone,
-          onTap: () => onChanged(true),
-        ),
-      ],
-    );
-  }
-}
-
-class _ToggleChip extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _ToggleChip({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cardColor   = Theme.of(context).cardColor;
-    final borderColor = Theme.of(context).dividerColor;
-    final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFFD4765B) : cardColor,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: selected ? const Color(0xFFD4765B) : borderColor,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 16,
-                color: selected ? Colors.white : subtleColor),
-            const SizedBox(width: 6),
-            Text(label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: selected ? Colors.white : subtleColor,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+String? _validatePassword(String? v) {
+  if (v == null || v.isEmpty) return 'Введите пароль';
+  if (v.length < 6) return 'Минимум 6 символов';
+  return null;
 }
 
 // ─── Поле телефона ────────────────────────────────────────────────────────────
 
 class _PhoneField extends StatelessWidget {
   final TextEditingController controller;
-  /// Если передан — показываем кнопку «Получить из SIM-карты»
   final VoidCallback? onSimTap;
   final bool simLoading;
 
@@ -928,7 +628,6 @@ class _PhoneField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // На iOS номер вводится вручную (Apple не даёт читать его из SIM)
     final hint = SimService.canReadNumber
         ? 'Нажмите SIM для заполнения'
         : '+7 (999) 000-00-00';
@@ -959,8 +658,6 @@ class _PhoneField extends StatelessWidget {
           )
         : base;
 
-    // Android: поле read-only, номер берётся из SIM автоматически.
-    // iOS: поле редактируемое — Apple не даёт номер, вводится вручную.
     final isReadOnly = SimService.canReadNumber;
 
     return TextFormField(
@@ -972,7 +669,6 @@ class _PhoneField extends StatelessWidget {
         LengthLimitingTextInputFormatter(16),
       ],
       validator: (v) {
-        // Номер необязателен
         if (v == null || v.trim().isEmpty) return null;
         final digits = v.replaceAll(RegExp(r'\D'), '');
         if (digits.length < 10) return 'Некорректный номер';
@@ -1126,22 +822,36 @@ class _AuthButton extends StatelessWidget {
 class _GroupSelectField extends StatelessWidget {
   final String? value;
   final bool showError;
+  final List<String> groups;
+  final bool isLoading;
+  final String? errorText;
+  final VoidCallback? onRetry;
   final ValueChanged<String?> onChanged;
 
   const _GroupSelectField({
     required this.value,
     required this.showError,
+    required this.groups,
+    required this.isLoading,
     required this.onChanged,
+    this.errorText,
+    this.onRetry,
   });
 
   Future<void> _openPicker(BuildContext context) async {
+    if (isLoading) return;
+    if (groups.isEmpty) {
+      // Группы не загружены — пытаемся перезагрузить
+      onRetry?.call();
+      return;
+    }
     final picked = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => _GroupPickerSheet(current: value),
+      builder: (_) => _GroupPickerSheet(current: value, groups: groups),
     );
     if (picked != null) onChanged(picked);
   }
@@ -1151,6 +861,7 @@ class _GroupSelectField extends StatelessWidget {
     final hasValue = value != null;
     final cardColor   = Theme.of(context).cardColor;
     final subtleColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55);
+    final hasLoadError = !isLoading && groups.isEmpty && errorText != null;
     return GestureDetector(
       onTap: () => _openPicker(context),
       child: Column(
@@ -1162,7 +873,7 @@ class _GroupSelectField extends StatelessWidget {
             decoration: BoxDecoration(
               color: cardColor,
               borderRadius: BorderRadius.circular(12),
-              border: showError
+              border: (showError || hasLoadError)
                   ? Border.all(color: const Color(0xFFE53935), width: 1.5)
                   : null,
             ),
@@ -1171,19 +882,38 @@ class _GroupSelectField extends StatelessWidget {
                 const Icon(Icons.school_outlined, color: Color(0xFFD4765B), size: 22),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    hasValue ? value! : 'Учебная группа',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: hasValue ? null : subtleColor,
-                    ),
-                  ),
+                  child: isLoading
+                      ? const Text('Загрузка групп...',
+                          style: TextStyle(fontSize: 16, color: Color(0xFF757575)))
+                      : Text(
+                          hasValue ? value! : 'Учебная группа',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: hasValue ? null : subtleColor,
+                          ),
+                        ),
                 ),
-                Icon(Icons.expand_more, color: subtleColor),
+                if (isLoading)
+                  const SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else if (hasLoadError)
+                  const Icon(Icons.refresh, color: Color(0xFFE53935))
+                else
+                  Icon(Icons.expand_more, color: subtleColor),
               ],
             ),
           ),
-          if (showError)
+          if (hasLoadError)
+            Padding(
+              padding: const EdgeInsets.only(left: 12, top: 6),
+              child: Text(
+                '${errorText!} Нажмите, чтобы повторить.',
+                style: const TextStyle(fontSize: 12, color: Color(0xFFE53935)),
+              ),
+            )
+          else if (showError)
             const Padding(
               padding: EdgeInsets.only(left: 12, top: 6),
               child: Text(
@@ -1201,7 +931,8 @@ class _GroupSelectField extends StatelessWidget {
 
 class _GroupPickerSheet extends StatefulWidget {
   final String? current;
-  const _GroupPickerSheet({this.current});
+  final List<String> groups;
+  const _GroupPickerSheet({this.current, required this.groups});
 
   @override
   State<_GroupPickerSheet> createState() => _GroupPickerSheetState();
@@ -1209,11 +940,12 @@ class _GroupPickerSheet extends StatefulWidget {
 
 class _GroupPickerSheetState extends State<_GroupPickerSheet> {
   final _searchController = TextEditingController();
-  List<String> _filtered = kCollegeGroups;
+  late List<String> _filtered;
 
   @override
   void initState() {
     super.initState();
+    _filtered = widget.groups;
     _searchController.addListener(_onSearch);
   }
 
@@ -1227,8 +959,8 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
     final q = _searchController.text.trim().toUpperCase();
     setState(() {
       _filtered = q.isEmpty
-          ? kCollegeGroups
-          : kCollegeGroups.where((g) => g.toUpperCase().contains(q)).toList();
+          ? widget.groups
+          : widget.groups.where((g) => g.toUpperCase().contains(q)).toList();
     });
   }
 
@@ -1239,7 +971,6 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
       height: screenH * 0.7,
       child: Column(
         children: [
-          // ── Ручка ────────────────────────────────────────────────
           const SizedBox(height: 12),
           Container(
             width: 40, height: 4,
@@ -1254,14 +985,13 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 12),
-          // ── Поиск ────────────────────────────────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(
               controller: _searchController,
               autofocus: true,
               decoration: InputDecoration(
-                hintText: 'Поиск…',
+                hintText: 'Поиск...',
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
                 fillColor: Theme.of(context).scaffoldBackgroundColor,
@@ -1275,7 +1005,6 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
           ),
           const SizedBox(height: 8),
           const Divider(height: 1),
-          // ── Список групп ─────────────────────────────────────────
           Expanded(
             child: _filtered.isEmpty
                 ? const Center(
@@ -1329,7 +1058,7 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
 // ─── Выбор роли при регистрации ────────────────────────────────────────────────
 
 class _AuthRoleSelector extends StatelessWidget {
-  final String value; // 'student' или 'teacher'
+  final String value;
   final ValueChanged<String> onChanged;
 
   const _AuthRoleSelector({required this.value, required this.onChanged});
@@ -1374,27 +1103,33 @@ class _AuthRoleChip extends StatelessWidget {
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
+
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: selected ? const Color(0xFFD4765B) : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
+            color: selected
+                ? const Color(0xFFD4765B)
+                : Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: selected ? const Color(0xFFD4765B) : const Color(0xFFE0E0E0),
+              color: selected
+                  ? const Color(0xFFD4765B)
+                  : Theme.of(context).dividerColor,
             ),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 18, color: selected ? Colors.white : AppColors.subtle),
+              Icon(icon, size: 18,
+                  color: selected ? Colors.white : const Color(0xFF757575)),
               const SizedBox(width: 8),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: selected ? Colors.white : AppColors.subtle,
+                  color: selected ? Colors.white : const Color(0xFF757575),
                 ),
               ),
             ],
@@ -1405,17 +1140,3 @@ class _AuthRoleChip extends StatelessWidget {
   }
 }
 
-// ─── Валидаторы ───────────────────────────────────────────────────────────────
-
-String? _validateEmail(String? value) {
-  if (value == null || value.trim().isEmpty) return 'Введите email';
-  final emailRegex = RegExp(r'^[^@]+@[^@]+\.[^@]+');
-  if (!emailRegex.hasMatch(value.trim())) return 'Некорректный email';
-  return null;
-}
-
-String? _validatePassword(String? value) {
-  if (value == null || value.isEmpty) return 'Введите пароль';
-  if (value.length < 6) return 'Минимум 6 символов';
-  return null;
-}

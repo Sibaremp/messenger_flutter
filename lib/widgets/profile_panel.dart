@@ -1,9 +1,12 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../app_constants.dart';
 import '../theme.dart' show ThemeProvider, AppThemeMode;
-import '../profile_screen.dart' show ProfileStorage, UserProfile, ProfileRole;
+import '../profile_screen.dart' show UserProfile, ProfileRole, profileFromAuth, ProfileAvatar;
+import '../services/auth_service.dart' as svc;
+import '../services/api_config.dart' show ApiConfig;
+import '../services/chat_service.dart' show ChatService;
+import '../screens/devices_screen.dart';
 
 /// Панель профиля для desktop-режима (правая панель).
 /// Объединяет просмотр и редактирование в одном виде, как на макете.
@@ -11,8 +14,22 @@ import '../profile_screen.dart' show ProfileStorage, UserProfile, ProfileRole;
 class ProfilePanel extends StatefulWidget {
   final VoidCallback? onAvatarChanged;
   final VoidCallback? onLogout;
+  final svc.AuthService auth;
 
-  const ProfilePanel({super.key, this.onAvatarChanged, this.onLogout});
+  /// ChatService используется для передачи потока событий в [DevicesScreen].
+  final ChatService? service;
+
+  /// Вызывается после выхода из аккаунта (из экрана устройств). Совпадает с [onLogout].
+  final VoidCallback? onForceLogout;
+
+  const ProfilePanel({
+    super.key,
+    this.onAvatarChanged,
+    this.onLogout,
+    required this.auth,
+    this.service,
+    this.onForceLogout,
+  });
 
   @override
   State<ProfilePanel> createState() => _ProfilePanelState();
@@ -28,6 +45,9 @@ class _ProfilePanelState extends State<ProfilePanel> {
   late final TextEditingController _bioCtrl;
   String? _avatarPath;
   bool _saving = false;
+
+  /// Показывать вкладку устройств поверх профиля (inline, без нового экрана).
+  bool _showDevices = false;
 
   /// Локальный выбор темы — применяется только при сохранении
   AppThemeMode? _pendingTheme;
@@ -55,8 +75,8 @@ class _ProfilePanelState extends State<ProfilePanel> {
     super.dispose();
   }
 
-  Future<void> _loadProfile() async {
-    final profile = await ProfileStorage.loadProfile();
+  void _loadProfile() {
+    final profile = profileFromAuth(widget.auth.currentUser);
     if (!mounted) return;
     setState(() {
       _profile = profile;
@@ -67,7 +87,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
       _groupCtrl.text = profile.group ?? '';
       _bioCtrl.text = profile.bio;
       _avatarPath = profile.avatarPath;
-      _pendingTheme = ThemeProvider.of(context).mode;
+      // _pendingTheme читается лениво в build() — его нельзя читать в initState
     });
   }
 
@@ -90,17 +110,43 @@ class _ProfilePanelState extends State<ProfilePanel> {
     if (name.isEmpty) return;
 
     setState(() => _saving = true);
+
+    // Если пользователь выбрал новый локальный аватар — заливаем его на сервер.
+    String? serverAvatarUrl;
+    try {
+      if (_avatarPath != null &&
+          _avatarPath!.isNotEmpty &&
+          !ApiConfig.isServerMediaPath(_avatarPath!)) {
+        serverAvatarUrl = await widget.auth.uploadAvatar(_avatarPath!);
+      } else {
+        serverAvatarUrl = _avatarPath;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось загрузить аватар: $e')),
+      );
+      return;
+    }
+
     final phone = _phoneCtrl.text.trim();
     final bio = _bioCtrl.text.trim();
     final updated = _profile!.copyWith(
       name: name,
       bio: bio,
-      avatarPath: _avatarPath,
-      clearAvatar: _avatarPath == null,
+      avatarPath: serverAvatarUrl,
+      clearAvatar: serverAvatarUrl == null,
       phone: phone.isEmpty ? null : phone,
       clearPhone: phone.isEmpty,
     );
-    await ProfileStorage.saveProfile(updated);
+    await widget.auth.updateProfile(
+      name: updated.name,
+      bio: updated.bio,
+      phone: updated.phone,
+      avatarUrl: updated.avatarPath,
+    );
+    _avatarPath = serverAvatarUrl;
 
     // Применить тему только при сохранении
     if (_pendingTheme != null && mounted) {
@@ -122,11 +168,28 @@ class _ProfilePanelState extends State<ProfilePanel> {
     );
   }
 
+  void _openDevices() {
+    if (widget.service == null) return;
+    setState(() => _showDevices = true);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_profile == null) {
       return const Center(child: CircularProgressIndicator());
     }
+
+    // Встроенный экран управления устройствами (поверх профиля, без нового Route)
+    if (_showDevices && widget.service != null) {
+      return DevicesScreen(
+        auth:      widget.auth,
+        events:    widget.service!.events,
+        onLogout:  widget.onForceLogout ?? widget.onLogout ?? () {},
+        embedded:  true,
+        onBack:    () => setState(() => _showDevices = false),
+      );
+    }
+
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final fieldColor = isDark ? Colors.white : Colors.black87;
     final labelColor = AppColors.subtle;
@@ -152,19 +215,7 @@ class _ProfilePanelState extends State<ProfilePanel> {
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(3),
-                    child: _avatarPath != null && File(_avatarPath!).existsSync()
-                        ? CircleAvatar(
-                            radius: 52,
-                            backgroundImage: FileImage(File(_avatarPath!)),
-                          )
-                        : CircleAvatar(
-                            radius: 52,
-                            backgroundColor: isDark
-                                ? const Color(0xFF2A2A2A)
-                                : const Color(0xFFF0F0F0),
-                            child: const Icon(Icons.person,
-                                size: 52, color: AppColors.subtle),
-                          ),
+                    child: ProfileAvatar(avatarPath: _avatarPath, radius: 52),
                   ),
                 ),
               ),
@@ -346,6 +397,29 @@ class _ProfilePanelState extends State<ProfilePanel> {
                               fontSize: 15, fontWeight: FontWeight.w600)),
                 ),
               ),
+              const SizedBox(height: 12),
+              // ── Управление устройствами ──────────────────────────────
+              if (widget.service != null)
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    onPressed: _openDevices,
+                    icon: const Icon(Icons.devices_outlined,
+                        color: AppColors.primary),
+                    label: const Text(
+                      'Управление устройствами',
+                      style: TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: AppColors.primary),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
               const SizedBox(height: 16),
               // ── Выйти ───────────────────────────────────────────────
               TextButton(

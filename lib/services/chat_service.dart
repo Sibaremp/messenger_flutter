@@ -24,6 +24,15 @@ class MessageDeleted extends ChatEvent {
   MessageDeleted(this.chatId, this.messageIds);
 }
 
+/// Изменился статус доставки сообщения (sent/delivered/read) — обычно прилетает
+/// отправителю, когда получатель открыл чат и прочитал сообщения.
+class MessageStatusChanged extends ChatEvent {
+  final String chatId;
+  final String messageId;
+  final MessageStatus status;
+  MessageStatusChanged(this.chatId, this.messageId, this.status);
+}
+
 class ChatUpdated extends ChatEvent {
   final Chat chat;
   ChatUpdated(this.chat);
@@ -34,12 +43,56 @@ class ChatDeleted extends ChatEvent {
   ChatDeleted(this.chatId);
 }
 
+/// Сообщение закреплено (локально или удалённо).
+class MessagePinned extends ChatEvent {
+  final String chatId;
+  final String messageId;
+  MessagePinned(this.chatId, this.messageId);
+}
+
+/// Сообщение откреплено (локально или удалённо).
+class MessageUnpinned extends ChatEvent {
+  final String chatId;
+  final String messageId;
+  MessageUnpinned(this.chatId, this.messageId);
+}
+
+/// Пользователь проголосовал в опросе.
+class PollVoted extends ChatEvent {
+  final String chatId;
+  final String messageId;
+  final String userId;
+  final List<String> optionIds;
+  PollVoted(this.chatId, this.messageId, this.userId, this.optionIds);
+}
+
+/// Опрос завершён (вручную или по дедлайну).
+class PollClosed extends ChatEvent {
+  final String chatId;
+  final String messageId;
+  PollClosed(this.chatId, this.messageId);
+}
+
+/// Сеанс пользователя был завершён удалённо (другим устройством, администратором,
+/// или истёк 30-дневный срок бездействия).
+/// Если [isCurrent] == true — текущий клиент обязан разлогиниться.
+class SessionTerminated extends ChatEvent {
+  final String sessionId;
+  final bool isCurrent;
+  SessionTerminated(this.sessionId, {this.isCurrent = false});
+}
+
 // ── Абстрактный интерфейс ─────────────────────────────────────────────────────
 
 /// Контракт для всех бэкендов чата (локальный, удалённый, mock).
 /// Экраны зависят от этого интерфейса, а не от конкретной реализации.
 abstract class ChatService {
+  /// Максимальное количество закреплённых сообщений в чате.
+  static const int maxPinnedMessages = 5;
   Future<List<Chat>> loadChats();
+
+  /// Максимальное количество упоминаний в одном сообщении (защита от спама).
+  static const int maxMentionsPerMessage = 10;
 
   Future<Chat> sendMessage({
     required String chatId,
@@ -48,6 +101,7 @@ abstract class ChatService {
     String senderName,
     String? senderGroup,
     ReplyInfo? replyTo,
+    List<Mention> mentions,
   });
 
   Future<Chat> editMessage({
@@ -73,6 +127,8 @@ abstract class ChatService {
     required ChatType type,
     required List<ChatMember> members,
     String? adminName,
+    bool isAcademic = false,
+    String? description,
   });
 
   Future<Chat> updateChatSettings(Chat chat);
@@ -116,6 +172,53 @@ abstract class ChatService {
   Future<List<SearchFileResult>> searchFiles({
     AttachmentType? type,
     String? nameQuery,
+  });
+
+  /// Закрепляет сообщение в чате. Выбрасывает [StateError], если достигнут лимит.
+  Future<Chat> pinMessage({
+    required String chatId,
+    required String messageId,
+  });
+
+  /// Открепляет ранее закреплённое сообщение.
+  Future<Chat> unpinMessage({
+    required String chatId,
+    required String messageId,
+  });
+
+  // ── Опросы ────────────────────────────────────────────────────────────────
+
+  /// Создаёт новое сообщение-опрос в чате.
+  Future<Chat> sendPoll({
+    required String chatId,
+    required String question,
+    required List<String> options,
+    PollType type = PollType.single,
+    bool isAnonymous = false,
+    bool canChangeVote = false,
+    DateTime? deadline,
+  });
+
+  /// Голосует в опросе. [optionIds] может содержать несколько id при множественном выборе.
+  Future<Chat> votePoll({
+    required String chatId,
+    required String messageId,
+    required List<String> optionIds,
+    required String userId,
+  });
+
+  /// Закрывает опрос вручную (только создатель или администратор).
+  Future<Chat> closePoll({
+    required String chatId,
+    required String messageId,
+  });
+
+  /// Помечает сообщения прочитанными на сервере. Сервер рассылает
+  /// [MessageStatusChanged] отправителям этих сообщений — чтобы галочки
+  /// стали голубыми в реальном времени.
+  Future<void> markRead({
+    required String chatId,
+    required List<String> messageIds,
   });
 
   Stream<ChatEvent> get events;
@@ -237,6 +340,7 @@ class LocalChatService implements ChatService {
     String senderName = 'Я',
     String? senderGroup,
     ReplyInfo? replyTo,
+    List<Mention> mentions = const [],
   }) async {
     final i = _idx(chatId);
     if (i == -1) throw StateError('Chat not found: $chatId');
@@ -245,6 +349,7 @@ class LocalChatService implements ChatService {
       senderName: senderName, senderGroup: senderGroup,
       attachment: attachment,
       replyTo: replyTo,
+      mentions: mentions,
       status: MessageStatus.delivered,
     );
     final updated = _chats[i].copyWith(messages: [..._chats[i].messages, msg]);
@@ -322,10 +427,14 @@ class LocalChatService implements ChatService {
     required ChatType type,
     required List<ChatMember> members,
     String? adminName,
+    bool isAcademic = false,
+    String? description,
   }) async {
     final chat = Chat(
       name: name, type: type, members: members,
       adminName: adminName, messages: [],
+      isAcademic: isAcademic,
+      description: description,
     );
     _chats.add(chat);
     _controller.add(ChatUpdated(chat));
@@ -476,6 +585,159 @@ class LocalChatService implements ChatService {
     }
     results.sort((a, b) => b.message.time.compareTo(a.message.time));
     return results;
+  }
+
+  @override
+  Future<Chat> pinMessage({
+    required String chatId,
+    required String messageId,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final chat = _chats[i];
+    if (chat.pinnedMessageIds.contains(messageId)) return chat;
+    if (chat.pinnedMessageIds.length >= ChatService.maxPinnedMessages) {
+      throw StateError(
+          'Достигнут лимит закреплённых сообщений (${ChatService.maxPinnedMessages})');
+    }
+    final updated = chat.copyWith(
+        pinnedMessageIds: [...chat.pinnedMessageIds, messageId]);
+    _chats[i] = updated;
+    _controller.add(MessagePinned(chatId, messageId));
+    _controller.add(ChatUpdated(updated));
+    return updated;
+  }
+
+  @override
+  Future<Chat> unpinMessage({
+    required String chatId,
+    required String messageId,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final chat = _chats[i];
+    if (!chat.pinnedMessageIds.contains(messageId)) return chat;
+    final updated = chat.copyWith(
+        pinnedMessageIds:
+            chat.pinnedMessageIds.where((id) => id != messageId).toList());
+    _chats[i] = updated;
+    _controller.add(MessageUnpinned(chatId, messageId));
+    _controller.add(ChatUpdated(updated));
+    return updated;
+  }
+
+  // ── Счётчик id вариантов опроса ───────────────────────────────────────────
+  static int _optionCounter = 0;
+
+  @override
+  Future<Chat> sendPoll({
+    required String chatId,
+    required String question,
+    required List<String> options,
+    PollType type = PollType.single,
+    bool isAnonymous = false,
+    bool canChangeVote = false,
+    DateTime? deadline,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final pollOptions = options
+        .map((t) => PollOption(id: 'opt_${++_optionCounter}', text: t))
+        .toList();
+    final poll = Poll(
+      question: question,
+      options: pollOptions,
+      type: type,
+      isAnonymous: isAnonymous,
+      canChangeVote: canChangeVote,
+      deadline: deadline,
+    );
+    final msg = Message(
+      text: '',
+      isMe: true,
+      time: DateTime.now(),
+      poll: poll,
+      status: MessageStatus.delivered,
+    );
+    final updated = _chats[i].copyWith(messages: [..._chats[i].messages, msg]);
+    _chats[i] = updated;
+    _controller.add(MessageReceived(chatId, msg));
+    return updated;
+  }
+
+  @override
+  Future<Chat> votePoll({
+    required String chatId,
+    required String messageId,
+    required List<String> optionIds,
+    required String userId,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final msgs = _chats[i].messages.map((m) {
+      if (m.id != messageId || m.poll == null) return m;
+      final poll = m.poll!;
+      if (!poll.isActive) return m;
+      // Если повторное голосование запрещено — пропускаем
+      if (!poll.canChangeVote && poll.userVotes.containsKey(userId)) return m;
+      // Убираем старые голоса пользователя
+      final prevVotes = poll.userVotes[userId] ?? const [];
+      var opts = poll.options.map((o) {
+        int v = o.votes;
+        if (prevVotes.contains(o.id)) v = (v - 1).clamp(0, 999999);
+        if (optionIds.contains(o.id)) v++;
+        return o.copyWith(votes: v);
+      }).toList();
+      final newUV = Map<String, List<String>>.from(poll.userVotes)
+        ..[userId] = optionIds;
+      return m.copyWith(
+        poll: poll.copyWith(
+          options: opts,
+          myVotes: optionIds,
+          userVotes: newUV,
+        ),
+      );
+    }).toList();
+    final updated = _chats[i].copyWith(messages: msgs);
+    _chats[i] = updated;
+    _controller.add(PollVoted(chatId, messageId, userId, optionIds));
+    return updated;
+  }
+
+  @override
+  Future<Chat> closePoll({
+    required String chatId,
+    required String messageId,
+  }) async {
+    final i = _idx(chatId);
+    if (i == -1) throw StateError('Chat not found: $chatId');
+    final msgs = _chats[i].messages.map((m) {
+      if (m.id != messageId || m.poll == null) return m;
+      return m.copyWith(poll: m.poll!.copyWith(isClosed: true));
+    }).toList();
+    final updated = _chats[i].copyWith(messages: msgs);
+    _chats[i] = updated;
+    _controller.add(PollClosed(chatId, messageId));
+    return updated;
+  }
+
+  @override
+  Future<void> markRead({
+    required String chatId,
+    required List<String> messageIds,
+  }) async {
+    // В in-memory режиме нет понятия «прочитано удалённо» — просто обновляем
+    // статус локально, чтобы UI выглядел одинаково с серверным сценарием.
+    final i = _idx(chatId);
+    if (i == -1) return;
+    final ids = messageIds.toSet();
+    final msgs = _chats[i].messages.map((m) {
+      if (m.isMe && ids.contains(m.id)) {
+        return m.copyWith(status: MessageStatus.read);
+      }
+      return m;
+    }).toList();
+    _chats[i] = _chats[i].copyWith(messages: msgs);
   }
 
   @override

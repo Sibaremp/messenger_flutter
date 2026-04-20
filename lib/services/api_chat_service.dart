@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:signalr_netcore/signalr_client.dart';
 import '../models.dart';
@@ -128,6 +129,48 @@ class ApiChatService implements ChatService {
           ));
         case 'chat_deleted':
           _eventController.add(ChatDeleted(data['chatId'] as String));
+        case 'message_pinned':
+          _eventController.add(MessagePinned(
+            data['chatId'] as String,
+            data['messageId'] as String,
+          ));
+        case 'message_unpinned':
+          _eventController.add(MessageUnpinned(
+            data['chatId'] as String,
+            data['messageId'] as String,
+          ));
+        case 'poll_voted':
+          _eventController.add(PollVoted(
+            data['chatId'] as String,
+            data['messageId'] as String,
+            data['userId'] as String,
+            (data['optionIds'] as List<dynamic>).cast<String>(),
+          ));
+        case 'poll_closed':
+          _eventController.add(PollClosed(
+            data['chatId'] as String,
+            data['messageId'] as String,
+          ));
+        case 'session_terminated':
+          _eventController.add(SessionTerminated(
+            data['sessionId'] as String,
+            isCurrent: data['isCurrent'] as bool? ?? false,
+          ));
+        case 'message_status':
+          // Сервер шлёт "sent" / "delivered" / "read"; если прилетит что-то
+          // неожиданное — молча игнорируем, не валим поток.
+          final statusStr = data['status'] as String? ?? 'sent';
+          MessageStatus parsed;
+          try {
+            parsed = MessageStatus.values.byName(statusStr);
+          } catch (_) {
+            parsed = MessageStatus.sent;
+          }
+          _eventController.add(MessageStatusChanged(
+            data['chatId'] as String,
+            data['messageId'] as String,
+            parsed,
+          ));
       }
     } catch (_) {
       // Некорректный пакет — игнорируем
@@ -157,14 +200,60 @@ class ApiChatService implements ChatService {
     String senderName = 'Я',
     String? senderGroup,
     ReplyInfo? replyTo,
+    List<Mention> mentions = const [],
   }) async {
+    // Если вложение указывает на локальный файл — сначала загружаем его на сервер
+    // и подменяем путь в Attachment результатом (/uploads/...).
+    Attachment? uploaded = attachment;
+    if (attachment != null && !ApiConfig.isServerMediaPath(attachment.path)) {
+      uploaded = await _uploadAttachment(attachment);
+    }
+
     final body = <String, dynamic>{
       'text': text,
-      if (attachment != null) 'attachment': attachment.toJson(),
+      if (uploaded != null) 'attachment': uploaded.toJson(),
       if (replyTo != null) 'replyTo': replyTo.toJson(),
+      if (mentions.isNotEmpty)
+        'mentions': mentions.map((m) => m.toJson()).toList(),
     };
     final data = await _post('/chats/$chatId/messages', body);
     return _chatFromJson(data);
+  }
+
+  /// Заливает файл на сервер через POST /api/files/upload (multipart) и
+  /// возвращает новый Attachment с серверным путём.
+  Future<Attachment> _uploadAttachment(Attachment src) async {
+    final file = File(src.path);
+    if (!await file.exists()) {
+      throw ApiException('Файл не найден: ${src.path}', 0);
+    }
+    final req = http.MultipartRequest('POST', Uri.parse('$_base/files/upload'))
+      ..headers['Authorization'] = _headers['Authorization'] ?? ''
+      ..files.add(await http.MultipartFile.fromPath(
+        'file', file.path, filename: src.fileName,
+      ));
+    final streamed = await req.send().timeout(const Duration(minutes: 5));
+    final resp = await http.Response.fromStream(streamed);
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      String msg = 'Ошибка загрузки файла';
+      try { msg = (jsonDecode(resp.body) as Map<String, dynamic>)['message']?.toString() ?? msg; } catch (_) {}
+      throw ApiException(msg, resp.statusCode);
+    }
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    final serverPath = data['path'] as String;
+    final typeStr = (data['type'] as String?) ?? src.type.name;
+    AttachmentType parsedType;
+    try {
+      parsedType = AttachmentType.values.byName(typeStr);
+    } catch (_) {
+      parsedType = src.type;
+    }
+    return Attachment(
+      path: serverPath,
+      type: parsedType,
+      fileName: (data['fileName'] as String?) ?? src.fileName,
+      fileSize: (data['fileSize'] as num?)?.toInt() ?? src.fileSize,
+    );
   }
 
   @override
@@ -212,20 +301,56 @@ class ApiChatService implements ChatService {
     required ChatType type,
     required List<ChatMember> members,
     String? adminName,
+    bool isAcademic = false,
+    String? description,
   }) async {
     final data = await _post('/chats/group', {
       'name': name,
       'type': type.name,
       'members': members.map((m) => m.toJson()).toList(),
       if (adminName != null) 'adminName': adminName,
+      'isAcademic': isAcademic,
+      if (description != null) 'description': description,
     });
     return _chatFromJson(data);
   }
 
   @override
   Future<Chat> updateChatSettings(Chat chat) async {
-    final data = await _put('/chats/${chat.id}/settings', chat.toJson());
+    Chat toSave = chat;
+    // Если аватар — локальный файл (ещё не загружен на сервер), заливаем его
+    // и подменяем путь на серверный URL перед отправкой настроек.
+    if (chat.avatarPath != null &&
+        chat.avatarPath!.isNotEmpty &&
+        !ApiConfig.isServerMediaPath(chat.avatarPath)) {
+      final serverPath = await _uploadChatAvatar(chat.id, chat.avatarPath!);
+      if (serverPath != null) {
+        toSave = chat.copyWith(avatarPath: serverPath);
+      }
+    }
+    final data = await _put('/chats/${toSave.id}/settings', toSave.toJson());
     return _chatFromJson(data);
+  }
+
+  /// Загружает аватар чата на сервер через POST /api/chats/{id}/avatar.
+  /// Возвращает серверный путь/URL или null при ошибке.
+  Future<String?> _uploadChatAvatar(String chatId, String filePath) async {
+    final file = File(filePath);
+    if (!await file.exists()) return null;
+    final req = http.MultipartRequest(
+      'POST', Uri.parse('$_base/chats/$chatId/avatar'),
+    )
+      ..headers['Authorization'] = _headers['Authorization'] ?? ''
+      ..files.add(await http.MultipartFile.fromPath('file', file.path));
+    final streamed = await req.send().timeout(const Duration(minutes: 5));
+    final resp = await http.Response.fromStream(streamed);
+    if (resp.statusCode < 200 || resp.statusCode >= 300) return null;
+    try {
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      return (data['avatarUrl'] ?? data['avatarPath'] ?? data['path']) as String?;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -244,9 +369,13 @@ class ApiChatService implements ChatService {
     Attachment? attachment,
     ReplyInfo? replyTo,
   }) async {
+    Attachment? uploaded = attachment;
+    if (attachment != null && !ApiConfig.isServerMediaPath(attachment.path)) {
+      uploaded = await _uploadAttachment(attachment);
+    }
     final data = await _post('/chats/$chatId/messages/$messageId/comments', {
       'text': text,
-      if (attachment != null) 'attachment': attachment.toJson(),
+      if (uploaded != null) 'attachment': uploaded.toJson(),
       if (replyTo != null) 'replyTo': replyTo.toJson(),
     });
     return _chatFromJson(data);
@@ -327,6 +456,87 @@ class ApiChatService implements ChatService {
         attachment: Attachment.fromJson(item['attachment'] as Map<String, dynamic>),
       );
     }).toList();
+  }
+
+  @override
+  Future<Chat> pinMessage({
+    required String chatId,
+    required String messageId,
+  }) async {
+    final data = await _post('/chats/$chatId/messages/$messageId/pin', {});
+    return _chatFromJson(data);
+  }
+
+  @override
+  Future<Chat> unpinMessage({
+    required String chatId,
+    required String messageId,
+  }) async {
+    final data = await _delete('/chats/$chatId/messages/$messageId/pin');
+    return _chatFromJson(data);
+  }
+
+  // ── Опросы ────────────────────────────────────────────────────────────────
+
+  @override
+  Future<Chat> sendPoll({
+    required String chatId,
+    required String question,
+    required List<String> options,
+    PollType type = PollType.single,
+    bool isAnonymous = false,
+    bool canChangeVote = false,
+    DateTime? deadline,
+  }) async {
+    final data = await _post('/chats/$chatId/polls', {
+      'question': question,
+      'options': options,
+      'type': type.name,
+      'isAnonymous': isAnonymous,
+      'canChangeVote': canChangeVote,
+      if (deadline != null) 'deadline': deadline.toIso8601String(),
+    });
+    return _chatFromJson(data);
+  }
+
+  @override
+  Future<Chat> votePoll({
+    required String chatId,
+    required String messageId,
+    required List<String> optionIds,
+    required String userId,
+  }) async {
+    final data = await _post('/chats/$chatId/polls/$messageId/vote', {
+      'optionIds': optionIds,
+    });
+    return _chatFromJson(data);
+  }
+
+  @override
+  Future<Chat> closePoll({
+    required String chatId,
+    required String messageId,
+  }) async {
+    final data = await _post('/chats/$chatId/polls/$messageId/close', {});
+    return _chatFromJson(data);
+  }
+
+  @override
+  Future<void> markRead({
+    required String chatId,
+    required List<String> messageIds,
+  }) async {
+    if (messageIds.isEmpty) return;
+    final hub = _hub;
+    // Hub может быть ещё не подключён (или переподключается); в этом случае
+    // молча пропускаем — сервер всё равно не сможет принять вызов. При
+    // следующем входе в чат markRead будет вызван снова.
+    if (hub == null || hub.state != HubConnectionState.Connected) return;
+    try {
+      await hub.invoke('MarkRead', args: [chatId, messageIds]);
+    } catch (_) {
+      // Не даём ошибкам хаба всплыть в UI — это фоновая операция.
+    }
   }
 
   @override

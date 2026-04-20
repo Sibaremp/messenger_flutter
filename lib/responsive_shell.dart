@@ -3,8 +3,9 @@ import 'package:flutter/material.dart';
 import 'models.dart';
 import 'app_constants.dart';
 import 'services/chat_service.dart';
-import 'auth_screen.dart' show AuthService, AuthScreen;
-import 'profile_screen.dart' show ProfileStorage, ProfileAvatar;
+import 'services/auth_service.dart' as svc;
+import 'auth_screen.dart' show AuthScreen;
+import 'profile_screen.dart' show ProfileAvatar;
 import 'widgets/sidebar.dart';
 import 'widgets/chat_widgets.dart';
 import 'screens/chat_screen.dart';
@@ -18,7 +19,8 @@ import 'screens/search_screen.dart';
 /// - Широкий экран (>=800): трёх панельный desktop-режим (sidebar + список + чат/профиль).
 class ResponsiveShell extends StatefulWidget {
   final ChatService service;
-  const ResponsiveShell({super.key, required this.service});
+  final svc.AuthService auth;
+  const ResponsiveShell({super.key, required this.service, required this.auth});
 
   @override
   State<ResponsiveShell> createState() => _ResponsiveShellState();
@@ -39,19 +41,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   TabController get _activeTabController =>
       _nav == SidebarNav.academic ? _academicTabController : _chatTabController;
 
-  final List<AppContact> _contacts = [
-    // Студенты
-    const AppContact(name: 'Алексей', group: 'ИС-22'),
-    const AppContact(name: 'Мария', group: 'ПИ-21'),
-    const AppContact(name: 'Иван', group: 'КБ-23'),
-    const AppContact(name: 'Екатерина', group: 'ВТ-21'),
-    const AppContact(name: 'Дмитрий', group: 'ИС-21'),
-    // Преподаватели
-    const AppContact(name: 'Проф. Петров', group: 'Физика', isTeacher: true),
-    const AppContact(name: 'Доц. Сулейменова', group: 'История', isTeacher: true),
-    const AppContact(name: 'Ст. преп. Ким', group: 'Математика', isTeacher: true),
-    const AppContact(name: 'Проф. Жумабаев', group: 'Информатика', isTeacher: true),
-  ];
+  List<AppContact> _contacts = [];
 
   @override
   void initState() {
@@ -60,7 +50,14 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     _academicTabController = TabController(length: 2, vsync: this);
     _loadChats();
     _loadAvatar();
-    _eventSub = widget.service.events.listen((_) => _loadChats());
+    _loadContacts();
+    _eventSub = widget.service.events.listen((event) {
+      _loadChats();
+      // Принудительный logout, если текущий сеанс завершён удалённо.
+      if (event is SessionTerminated && event.isCurrent) {
+        _logout();
+      }
+    });
   }
 
   @override
@@ -88,8 +85,22 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   }
 
   Future<void> _loadAvatar() async {
-    final profile = await ProfileStorage.loadProfile();
-    if (mounted) setState(() => _myAvatarPath = profile.avatarPath);
+    final user = widget.auth.currentUser;
+    if (user?.avatarUrl != null) {
+      if (mounted) setState(() => _myAvatarPath = user!.avatarUrl);
+    }
+  }
+
+  Future<void> _loadContacts() async {
+    try {
+      final raw = await widget.auth.loadContacts();
+      if (!mounted) return;
+      setState(() {
+        _contacts = raw.map((j) => AppContact.fromJson(j)).toList();
+      });
+    } catch (_) {
+      // Сервер недоступен — контакты останутся пустыми
+    }
   }
 
   List<Chat> get _sortedChats =>
@@ -125,15 +136,18 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
   /// Показывать ли кнопку действия в sidebar
   bool get _showActionButton {
-    // В академическом разделе на вкладке «Группы» — кнопки нет
-    if (_nav == SidebarNav.academic && _activeTabController.index == 1) return false;
+    // В академическом разделе на вкладке «Группы» — только для преподавателей
+    if (_nav == SidebarNav.academic && _activeTabController.index == 1) {
+      return widget.auth.currentUser?.isTeacher == true;
+    }
     // В остальных случаях: только для чатов (Общение / Академический)
     return _nav == SidebarNav.chat || _nav == SidebarNav.academic;
   }
 
   /// Текст и иконка кнопки в sidebar зависят от вкладки
   String get _sidebarActionLabel {
-    if (_nav == SidebarNav.chat && _activeTabController.index == 1) {
+    if (_activeTabController.index == 1 &&
+        (_nav == SidebarNav.chat || _nav == SidebarNav.academic)) {
       return 'Создать группу';
     }
     return 'Новый чат';
@@ -143,7 +157,9 @@ class _ResponsiveShellState extends State<ResponsiveShell>
 
   /// Обработчик нажатия кнопки
   void _showCreateOptions() {
-    final isGroupsTab = _nav == SidebarNav.chat && _activeTabController.index == 1;
+    final isGroupsTab = _activeTabController.index == 1 &&
+        (_nav == SidebarNav.chat || _nav == SidebarNav.academic);
+    final isAcademic = _nav == SidebarNav.academic;
 
     // На вкладке «Личные» — сразу новый чат
     if (!isGroupsTab) {
@@ -151,7 +167,15 @@ class _ResponsiveShellState extends State<ResponsiveShell>
       return;
     }
 
-    // На вкладке «Группы» (только Общение) — выбор: группа или сообщество
+    // Академические группы может создавать только преподаватель
+    if (isAcademic && widget.auth.currentUser?.isTeacher != true) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Только преподаватель может создавать академические группы'),
+      ));
+      return;
+    }
+
+    // На вкладке «Группы» — выбор: группа или сообщество
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -175,11 +199,11 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                 backgroundColor: AppColors.primary,
                 child: Icon(Icons.group, color: AppColors.textLight),
               ),
-              title: const Text('Создать группу',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+              title: Text(isAcademic ? 'Создать академическую группу' : 'Создать группу',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
               onTap: () {
                 Navigator.pop(context);
-                _openCreateDialog(ChatType.group);
+                _openCreateDialog(ChatType.group, isAcademic: isAcademic);
               },
             ),
             ListTile(
@@ -187,11 +211,11 @@ class _ResponsiveShellState extends State<ResponsiveShell>
                 backgroundColor: AppColors.primary,
                 child: Icon(Icons.campaign, color: AppColors.textLight),
               ),
-              title: const Text('Создать сообщество',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+              title: Text(isAcademic ? 'Создать академическое сообщество' : 'Создать сообщество',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
               onTap: () {
                 Navigator.pop(context);
-                _openCreateDialog(ChatType.community);
+                _openCreateDialog(ChatType.community, isAcademic: isAcademic);
               },
             ),
             const SizedBox(height: 8),
@@ -228,36 +252,51 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     _loadChats();
   }
 
-  void _openCreateDialog(ChatType type) {
+  void _openCreateDialog(ChatType type, {bool isAcademic = false}) {
     showDialog(
       context: context,
       builder: (_) => _DesktopCreateChatDialog(
         type: type,
+        isAcademic: isAcademic,
         contacts: _contacts,
-        onCreated: (name, members, adminName) async {
-          final chat = await widget.service.createGroupOrCommunity(
-            name: name, type: type, members: members, adminName: adminName,
-          );
-          if (!mounted) return;
-          setState(() {
-            _chats.add(chat);
-            _selectedChat = chat;
-          });
+        creatorName: widget.auth.currentUser?.name ?? 'Я',
+        onCreated: (name, members, adminName, description) async {
+          try {
+            final chat = await widget.service.createGroupOrCommunity(
+              name: name,
+              type: type,
+              members: members,
+              adminName: adminName,
+              isAcademic: isAcademic,
+              description: description,
+            );
+            if (!mounted) return;
+            setState(() {
+              _chats.add(chat);
+              _selectedChat = chat;
+            });
+          } catch (e) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Ошибка: $e')),
+            );
+          }
         },
       ),
     );
   }
 
   Future<void> _logout() async {
-    await AuthService.logout();
+    await widget.auth.logout();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
         builder: (ctx) => AuthScreen(
+          auth: widget.auth,
           onLoginSuccess: () {
             Navigator.of(ctx).pushAndRemoveUntil(
               MaterialPageRoute(
-                builder: (_) => ResponsiveShell(service: widget.service),
+                builder: (_) => ResponsiveShell(service: widget.service, auth: widget.auth),
               ),
               (_) => false,
             );
@@ -272,7 +311,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
     if (width < AppSizes.desktopBreakpoint) {
-      return ChatListScreen(service: widget.service);
+      return ChatListScreen(service: widget.service, auth: widget.auth);
     }
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -354,6 +393,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
         service: widget.service,
         contacts: _contacts,
         embedded: true,
+        auth: widget.auth,
         onChatSelected: (chat) {
           setState(() {
             _selectedChat = chat;
@@ -366,8 +406,11 @@ class _ResponsiveShellState extends State<ResponsiveShell>
     switch (_nav) {
       case SidebarNav.profile:
         return ProfilePanel(
+          auth: widget.auth,
           onAvatarChanged: _loadAvatar,
           onLogout: _logout,
+          service: widget.service,
+          onForceLogout: _logout,
         );
       case SidebarNav.notifications:
         return const NotificationsPanel();
@@ -392,6 +435,7 @@ class _ResponsiveShellState extends State<ResponsiveShell>
             onChatUpdated: _onChatUpdated,
             contacts: _contacts,
             embedded: true,
+            auth: widget.auth,
           );
         }
         return const _EmptyPanel();
@@ -914,15 +958,19 @@ class _SimpleContactPickerState extends State<_SimpleContactPicker> {
 
 class _DesktopCreateChatDialog extends StatefulWidget {
   final ChatType type;
+  final bool isAcademic;
   final List<AppContact> contacts;
+  final String creatorName;
   final Future<void> Function(
-          String name, List<ChatMember> members, String? adminName)
+          String name, List<ChatMember> members, String? adminName, String? description)
       onCreated;
 
   const _DesktopCreateChatDialog({
     required this.type,
     required this.contacts,
     required this.onCreated,
+    required this.creatorName,
+    this.isAcademic = false,
   });
 
   @override
@@ -933,12 +981,14 @@ class _DesktopCreateChatDialog extends StatefulWidget {
 class _DesktopCreateChatDialogState
     extends State<_DesktopCreateChatDialog> {
   final _nameController = TextEditingController();
+  final _descriptionController = TextEditingController();
   final Set<String> _selected = {};
   String? _nameError;
 
   @override
   void dispose() {
     _nameController.dispose();
+    _descriptionController.dispose();
     super.dispose();
   }
 
@@ -948,18 +998,25 @@ class _DesktopCreateChatDialogState
       setState(() => _nameError = 'Введите название');
       return;
     }
-    final members = _selected
-        .map((n) => ChatMember(name: n, role: MemberRole.member))
-        .toList();
-    final adminName = widget.type == ChatType.community ? 'Я' : null;
+    final members = [
+      ChatMember(name: widget.creatorName, role: MemberRole.creator),
+      ..._selected
+          .where((n) => n != widget.creatorName)
+          .map((n) => ChatMember(name: n, role: MemberRole.member)),
+    ];
+    final adminName = widget.creatorName;
+    final description = _descriptionController.text.trim().isEmpty
+        ? null
+        : _descriptionController.text.trim();
     Navigator.pop(context);
-    await widget.onCreated(name, members, adminName);
+    await widget.onCreated(name, members, adminName, description);
   }
 
   @override
   Widget build(BuildContext context) {
-    final title =
+    final base =
         widget.type == ChatType.group ? 'Новая группа' : 'Новое сообщество';
+    final title = widget.isAcademic ? '$base (академическая)' : base;
     return AlertDialog(
       title: Text(title),
       content: SizedBox(
@@ -978,6 +1035,16 @@ class _DesktopCreateChatDialogState
               onChanged: (_) {
                 if (_nameError != null) setState(() => _nameError = null);
               },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _descriptionController,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Описание (необязательно)',
+                border: OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 16),
             const Align(
