@@ -16,6 +16,7 @@ import '../app_constants.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../services/file_download_service.dart';
 import '../services/video_thumbnail_service.dart';
+import '../services/volume_service.dart';
 import 'package:share_plus/share_plus.dart';
 import '../profile_screen.dart' show ProfileAvatar;
 
@@ -1381,6 +1382,9 @@ class _VideoPreview extends StatefulWidget {
 class _VideoPreviewState extends State<_VideoPreview> {
   String? _thumbPath;
   bool _thumbLoading = true;
+  Duration? _duration;
+
+  // Захват превью на десктопе (нужен VideoController / Texture).
   Player? _capturePlayer;
   VideoController? _captureController;
 
@@ -1390,7 +1394,17 @@ class _VideoPreviewState extends State<_VideoPreview> {
   @override
   void initState() {
     super.initState();
-    _loadThumbnail();
+    final svc = VideoThumbnailService.instance;
+    final path = widget.attachment.path;
+
+    // Синхронная проверка кэша: исключает мерцание при прокрутке.
+    if (svc.isCached(path)) {
+      _thumbPath = svc.getCachedThumb(path);
+      _duration = svc.getCachedDuration(path);
+      _thumbLoading = false;
+    } else {
+      _loadThumbnail();
+    }
   }
 
   @override
@@ -1402,80 +1416,109 @@ class _VideoPreviewState extends State<_VideoPreview> {
   }
 
   Future<void> _loadThumbnail() async {
-    final path = await VideoThumbnailService.instance
-        .getThumbnail(widget.attachment.path);
-    if (!mounted) return;
-    if (path != null) {
-      setState(() { _thumbPath = path; _thumbLoading = false; });
-      return;
-    }
-    // На десктопе player.screenshot() требует активный VideoController.
-    // Создаём скрытый Player + VideoController, рендерим 1×1 Video-виджет,
-    // дожидаемся первого кадра, делаем скриншот, сохраняем, убираем.
+    final path = widget.attachment.path;
+
     if (_isDesktop) {
+      // Запускаем захват через VideoController (единственный способ на Windows/Linux/macOS).
       await _captureDesktopThumbnail();
     } else {
-      setState(() => _thumbLoading = false);
+      // Мобильные: media_kit умеет делать screenshot без Texture.
+      final thumb = await VideoThumbnailService.instance.getThumbnail(path);
+      if (!mounted) return;
+      setState(() {
+        _thumbPath = thumb;
+        _duration = VideoThumbnailService.instance.getCachedDuration(path);
+        _thumbLoading = false;
+      });
     }
   }
 
   Future<void> _captureDesktopThumbnail() async {
+    final videoPath = widget.attachment.path;
     try {
-      final videoPath = widget.attachment.path;
       final source = ApiConfig.isServerMediaPath(videoPath)
           ? (ApiConfig.resolveMediaUrl(videoPath) ?? videoPath)
           : videoPath;
 
       final player = Player();
       final controller = VideoController(player);
-      if (!mounted) { await player.dispose(); return; }
-      setState(() { _capturePlayer = player; _captureController = controller; });
+      if (!mounted) {
+        await player.dispose();
+        return;
+      }
+      setState(() {
+        _capturePlayer = player;
+        _captureController = controller;
+      });
 
+      // play: true чтобы декодер начал работу и Texture заполнился.
       await player.open(Media(source), play: true);
-      // Ждём появления размеров кадра — признак того, что декодер заработал.
+
+      // Ждём первого декодированного кадра.
       await player.stream.width
           .firstWhere((w) => w != null && w > 0)
           .timeout(const Duration(seconds: 15))
           .catchError((_) => null);
+
+      // Сохраняем длительность.
+      final dur = player.state.duration;
+      if (dur > Duration.zero) {
+        VideoThumbnailService.instance.cacheDuration(videoPath, dur);
+      }
+
       await player.pause();
-      // Небольшая задержка для того, чтобы Texture заполнился первым кадром.
-      await Future.delayed(const Duration(milliseconds: 300));
+      // Texture должен обновиться после паузы.
+      await Future.delayed(const Duration(milliseconds: 350));
 
       final bytes = await player.screenshot();
       if (bytes != null && bytes.isNotEmpty) {
-        await VideoThumbnailService.instance.saveScreenshot(videoPath, bytes);
-        final saved = await VideoThumbnailService.instance.getThumbnail(videoPath);
-        if (mounted) setState(() => _thumbPath = saved);
+        final saved =
+            await VideoThumbnailService.instance.saveScreenshot(videoPath, bytes);
+        if (mounted && saved != null) {
+          setState(() {
+            _thumbPath = saved;
+            _duration = dur > Duration.zero ? dur : null;
+          });
+        }
       }
     } catch (_) {
-      // Нет кодека / файл недоступен — покажем плейсхолдер.
+      // Нет кодека / сеть недоступна — показываем плейсхолдер.
     } finally {
-      if (mounted) setState(() { _thumbLoading = false; _captureController = null; });
+      if (mounted) {
+        setState(() {
+          _thumbLoading = false;
+          _captureController = null;
+        });
+      }
       _capturePlayer?.dispose();
       _capturePlayer = null;
     }
   }
 
+  // ── UI ───────────────────────────────────────────────────────────────────
+
+  static String _fmtDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
   Widget _buildBackdrop() {
-    // Загружается миниатюра — показываем тёмный прямоугольник с индикатором.
-    // (ClipRRect и скругление — у родителя)
     if (_thumbLoading) {
       return Container(
         width: 220,
         height: 160,
-        color: Colors.black87,
+        color: const Color(0xFF1A1A1A),
         alignment: Alignment.center,
         child: const SizedBox(
-          width: 24,
-          height: 24,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: Colors.white30,
-          ),
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white38),
         ),
       );
     }
-    // Миниатюра есть — показываем её.
+
     final thumb = _thumbPath;
     if (thumb != null) {
       return Image.file(
@@ -1483,7 +1526,8 @@ class _VideoPreviewState extends State<_VideoPreview> {
         width: 220,
         height: 160,
         fit: BoxFit.cover,
-        errorBuilder: (ctx, e, s) => _placeholderBackdrop(),
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _placeholderBackdrop(),
       );
     }
     return _placeholderBackdrop();
@@ -1492,16 +1536,26 @@ class _VideoPreviewState extends State<_VideoPreview> {
   Widget _placeholderBackdrop() => Container(
         width: 220,
         height: 160,
-        color: Colors.black87,
-        child: const Icon(Icons.movie, color: Colors.white24, size: 56),
+        color: const Color(0xFF1A1A1A),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.videocam_outlined, color: Colors.white24, size: 44),
+            SizedBox(height: 6),
+            Text('Видео', style: TextStyle(color: Colors.white24, fontSize: 12)),
+          ],
+        ),
       );
 
   @override
   Widget build(BuildContext context) {
     final attachment = widget.attachment;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final dur = _duration;
+
     return GestureDetector(
-      onTap: () => MediaViewerScreen.open(context, attachment, allMedia: widget.allMedia),
+      onTap: () =>
+          MediaViewerScreen.open(context, attachment, allMedia: widget.allMedia),
       child: _MediaFrame(
         isDark: isDark,
         child: ClipRRect(
@@ -1509,47 +1563,57 @@ class _VideoPreviewState extends State<_VideoPreview> {
           child: Stack(
             alignment: Alignment.center,
             children: [
+              // ── Фоновый кадр ─────────────────────────────────────────────
               _buildBackdrop(),
-              // Скрытый 1×1 VideoController-виджет для захвата превью на десктопе.
-              // Регистрирует Texture в Flutter Engine — без него screenshot() = null.
+
+              // ── Скрытый VideoController для захвата кадра на десктопе ────
               if (_captureController != null)
                 Positioned(
-                  left: 0, top: 0,
+                  left: 0,
+                  top: 0,
                   child: SizedBox(
-                    width: 1, height: 1,
+                    width: 1,
+                    height: 1,
                     child: Video(controller: _captureController!),
                   ),
                 ),
-              // Кнопка воспроизведения
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: Colors.black45,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white54, width: 2),
+
+              // ── Кнопка Play ──────────────────────────────────────────────
+              if (!_thumbLoading)
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white60, width: 2),
+                  ),
+                  child: const Icon(Icons.play_arrow, color: Colors.white, size: 34),
                 ),
-                child: const Icon(Icons.play_arrow, color: Colors.white, size: 34),
-              ),
-              // Плашка с именем файла снизу
+
+              // ── Нижняя полоса: имя файла + длительность ──────────────────
               Positioned(
                 bottom: 0,
                 left: 0,
                 right: 0,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                   decoration: BoxDecoration(
                     borderRadius: const BorderRadius.vertical(
                         bottom: Radius.circular(10)),
                     gradient: LinearGradient(
                       begin: Alignment.bottomCenter,
                       end: Alignment.topCenter,
-                      colors: [Colors.black.withValues(alpha: 0.7), Colors.transparent],
+                      colors: [
+                        Colors.black.withValues(alpha: 0.72),
+                        Colors.transparent
+                      ],
                     ),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.videocam, color: Colors.white70, size: 14),
+                      const Icon(Icons.videocam, color: Colors.white60, size: 13),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
@@ -1560,11 +1624,28 @@ class _VideoPreviewState extends State<_VideoPreview> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (attachment.fileSize != null)
+                      // Длительность
+                      if (dur != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            _fmtDuration(dur),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        )
+                      else if (attachment.fileSize != null)
                         Text(
                           attachment.readableSize,
                           style: const TextStyle(
-                              color: Colors.white60, fontSize: 10),
+                              color: Colors.white54, fontSize: 10),
                         ),
                     ],
                   ),
@@ -2062,7 +2143,8 @@ class MediaViewerScreen extends StatefulWidget {
 // ═══════════════════════════════════════════════════════════════════════════
 // VIDEO PLAYER — video_player package (Android / iOS / Web / Windows / macOS)
 // ═══════════════════════════════════════════════════════════════════════════
-class _MediaViewerScreenState extends State<MediaViewerScreen> {
+class _MediaViewerScreenState extends State<MediaViewerScreen>
+    with WidgetsBindingObserver {
   late int _currentPage;
   late ScrollController _thumbScrollCtrl;
 
@@ -2079,7 +2161,8 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   // ── Volume (desktop only) ─────────────────────────────────────────────
   bool _showVolumeSlider = false;
-  double _volume = 1.0;
+  // Инициализируется в initState из VolumeService (по умолчанию 0.7).
+  double _volume = VolumeService.defaultVolume;
 
   // ── Playback speed ────────────────────────────────────────────────────
   static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -2106,10 +2189,27 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   @override
   void initState() {
     super.initState();
+    _volume = VolumeService.instance.volume; // восстанавливаем сохранённую громкость
     _currentPage = widget.initialIndex;
     _thumbScrollCtrl = ScrollController();
+    WidgetsBinding.instance.addObserver(this);
     if (_isVideo) _initVideo();
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollThumbToView());
+  }
+
+  // Автопауза при уходе приложения в фон.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      if (_isPlaying) {
+        if (_useMediaKit) {
+          _mkPlayer?.pause();
+        } else {
+          _vpc?.pause();
+        }
+      }
+    }
   }
 
   // ── Navigation ────────────────────────────────────────────────────────
@@ -2170,7 +2270,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
         vpc.dispose();
         return;
       }
-      setState(() { _vpReady = true; _speedIdx = 2; _volume = 1.0; });
+      setState(() { _vpReady = true; _speedIdx = 2; });
       await vpc.setPlaybackSpeed(_speeds[_speedIdx]);
       await vpc.setVolume(_volume);
       await vpc.play();
@@ -2203,7 +2303,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
       if (!mounted || _mkPlayer != player) return;
 
-      setState(() { _vpReady = true; _speedIdx = 2; _volume = 1.0; });
+      setState(() { _vpReady = true; _speedIdx = 2; });
       await player.setRate(_speeds[_speedIdx]);
       await player.setVolume(_volume * 100);
 
@@ -2347,6 +2447,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _disposeVideo();
     _thumbScrollCtrl.dispose();
     if (!kIsWeb && !_isDesktop) {
@@ -2569,7 +2670,20 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
     }
 
     if (!_vpReady || (_vpc == null && _mkController == null)) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      // Пока видео инициализируется — показываем кэшированное превью.
+      final thumb = VideoThumbnailService.instance.getCachedThumb(_att.path);
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          if (thumb != null)
+            Image.file(File(thumb), fit: BoxFit.cover, gaplessPlayback: true)
+          else
+            const ColoredBox(color: Colors.black),
+          const Center(
+            child: CircularProgressIndicator(color: AppColors.primary),
+          ),
+        ],
+      );
     }
 
     return GestureDetector(
@@ -2846,6 +2960,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                   _vpc?.setVolume(v);
                 }
               },
+              onChangeEnd: (v) => VolumeService.instance.save(v),
             ),
           ),
         ),
@@ -2892,28 +3007,24 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   Widget _buildThumbContent(Attachment att) {
     if (att.type == AttachmentType.video) {
-      // Пытаемся показать кэшированную миниатюру видео
-      return FutureBuilder<String?>(
-        future: VideoThumbnailService.instance.getThumbnail(att.path),
-        builder: (_, snap) {
-          if (snap.hasData && snap.data != null) {
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                Image.file(File(snap.data!), fit: BoxFit.cover),
-                Center(
-                  child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 20),
-                ),
-              ],
-            );
-          }
-          return Container(
-            color: Colors.grey[900],
-            child: const Center(
-              child: Icon(Icons.videocam, color: Colors.white38, size: 20),
+      // Синхронная проверка кэша — без FutureBuilder, без мерцания.
+      final thumb = VideoThumbnailService.instance.getCachedThumb(att.path);
+      if (thumb != null) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.file(File(thumb), fit: BoxFit.cover, gaplessPlayback: true),
+            const Center(
+              child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 20),
             ),
-          );
-        },
+          ],
+        );
+      }
+      return Container(
+        color: Colors.grey[900],
+        child: const Center(
+          child: Icon(Icons.videocam, color: Colors.white38, size: 20),
+        ),
       );
     }
     final path = att.path;

@@ -5,6 +5,7 @@ import 'theme.dart';
 import 'services/chat_service.dart';
 import 'services/auth_service.dart';
 import 'services/api_chat_service.dart';
+import 'services/volume_service.dart';
 import 'responsive_shell.dart';
 import 'auth_screen.dart';
 
@@ -13,6 +14,7 @@ import 'auth_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  await VolumeService.instance.init();
 
   final auth = AuthService();
   await auth.tryRestoreSession();
