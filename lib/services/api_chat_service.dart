@@ -248,11 +248,16 @@ class ApiChatService implements ChatService {
     } catch (_) {
       parsedType = src.type;
     }
+    // Также забираем thumbnailPath и durationMs, которые сервер генерирует
+    // при загрузке видео. Без них они не попадут в тело запроса на создание
+    // сообщения, и превью не будет сохранено в чате.
     return Attachment(
       path: serverPath,
       type: parsedType,
       fileName: (data['fileName'] as String?) ?? src.fileName,
       fileSize: (data['fileSize'] as num?)?.toInt() ?? src.fileSize,
+      thumbnailPath: (data['thumbnailPath'] ?? data['thumbnail_path']) as String?,
+      durationMs: ((data['durationMs'] ?? data['duration_ms']) as num?)?.toInt(),
     );
   }
 

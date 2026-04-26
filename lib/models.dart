@@ -22,11 +22,22 @@ class Attachment {
   final String fileName;
   final int? fileSize;
 
+  /// Серверный путь к JPEG-превью (только для видео).
+  /// Генерируется бэкендом при загрузке видео через FFmpeg.
+  /// Null у старых сообщений и у локальных файлов до отправки.
+  final String? thumbnailPath;
+
+  /// Длительность видео в миллисекундах.
+  /// Заполняется бэкендом вместе с [thumbnailPath].
+  final int? durationMs;
+
   const Attachment({
     required this.path,
     required this.type,
     required this.fileName,
     this.fileSize,
+    this.thumbnailPath,
+    this.durationMs,
   });
 
   /// Читаемый размер файла: байты → КБ → МБ.
@@ -37,18 +48,28 @@ class Attachment {
     return '${(fileSize! / (1024 * 1024)).toStringAsFixed(1)} МБ';
   }
 
+  /// Длительность как [Duration] (null если неизвестна).
+  Duration? get duration =>
+      durationMs != null ? Duration(milliseconds: durationMs!) : null;
+
   Map<String, dynamic> toJson() => {
     'path': path,
     'type': type.name,
     'fileName': fileName,
     if (fileSize != null) 'fileSize': fileSize,
+    if (thumbnailPath != null) 'thumbnailPath': thumbnailPath,
+    if (durationMs != null) 'durationMs': durationMs,
   };
 
   factory Attachment.fromJson(Map<String, dynamic> j) => Attachment(
     path: j['path'] as String,
     type: AttachmentType.values.byName(j['type'] as String),
     fileName: j['fileName'] as String,
-    fileSize: j['fileSize'] as int?,
+    fileSize: (j['fileSize'] as num?)?.toInt(),
+    // Принимаем оба варианта ключа (camelCase и snake_case) на случай
+    // разных версий бэкенда или автогенерированной сериализации.
+    thumbnailPath: (j['thumbnailPath'] ?? j['thumbnail_path']) as String?,
+    durationMs: ((j['durationMs'] ?? j['duration_ms']) as num?)?.toInt(),
   );
 }
 

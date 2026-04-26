@@ -15,7 +15,6 @@ import '../models.dart';
 import '../app_constants.dart';
 import '../services/api_config.dart' show ApiConfig;
 import '../services/file_download_service.dart';
-import '../services/video_thumbnail_service.dart';
 import '../services/volume_service.dart';
 import 'package:share_plus/share_plus.dart';
 import '../profile_screen.dart' show ProfileAvatar;
@@ -1370,130 +1369,10 @@ class _MediaFrame extends StatelessWidget {
   }
 }
 
-class _VideoPreview extends StatefulWidget {
+class _VideoPreview extends StatelessWidget {
   final Attachment attachment;
   final List<Attachment> allMedia;
   const _VideoPreview({required this.attachment, this.allMedia = const []});
-
-  @override
-  State<_VideoPreview> createState() => _VideoPreviewState();
-}
-
-class _VideoPreviewState extends State<_VideoPreview> {
-  String? _thumbPath;
-  bool _thumbLoading = true;
-  Duration? _duration;
-
-  // Захват превью на десктопе (нужен VideoController / Texture).
-  Player? _capturePlayer;
-  VideoController? _captureController;
-
-  static bool get _isDesktop =>
-      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
-
-  @override
-  void initState() {
-    super.initState();
-    final svc = VideoThumbnailService.instance;
-    final path = widget.attachment.path;
-
-    // Синхронная проверка кэша: исключает мерцание при прокрутке.
-    if (svc.isCached(path)) {
-      _thumbPath = svc.getCachedThumb(path);
-      _duration = svc.getCachedDuration(path);
-      _thumbLoading = false;
-    } else {
-      _loadThumbnail();
-    }
-  }
-
-  @override
-  void dispose() {
-    _capturePlayer?.dispose();
-    _capturePlayer = null;
-    _captureController = null;
-    super.dispose();
-  }
-
-  Future<void> _loadThumbnail() async {
-    final path = widget.attachment.path;
-
-    if (_isDesktop) {
-      // Запускаем захват через VideoController (единственный способ на Windows/Linux/macOS).
-      await _captureDesktopThumbnail();
-    } else {
-      // Мобильные: media_kit умеет делать screenshot без Texture.
-      final thumb = await VideoThumbnailService.instance.getThumbnail(path);
-      if (!mounted) return;
-      setState(() {
-        _thumbPath = thumb;
-        _duration = VideoThumbnailService.instance.getCachedDuration(path);
-        _thumbLoading = false;
-      });
-    }
-  }
-
-  Future<void> _captureDesktopThumbnail() async {
-    final videoPath = widget.attachment.path;
-    try {
-      final source = ApiConfig.isServerMediaPath(videoPath)
-          ? (ApiConfig.resolveMediaUrl(videoPath) ?? videoPath)
-          : videoPath;
-
-      final player = Player();
-      final controller = VideoController(player);
-      if (!mounted) {
-        await player.dispose();
-        return;
-      }
-      setState(() {
-        _capturePlayer = player;
-        _captureController = controller;
-      });
-
-      // play: true чтобы декодер начал работу и Texture заполнился.
-      await player.open(Media(source), play: true);
-
-      // Ждём первого декодированного кадра.
-      await player.stream.width
-          .firstWhere((w) => w != null && w > 0)
-          .timeout(const Duration(seconds: 15))
-          .catchError((_) => null);
-
-      // Сохраняем длительность.
-      final dur = player.state.duration;
-      if (dur > Duration.zero) {
-        VideoThumbnailService.instance.cacheDuration(videoPath, dur);
-      }
-
-      await player.pause();
-      // Texture должен обновиться после паузы.
-      await Future.delayed(const Duration(milliseconds: 350));
-
-      final bytes = await player.screenshot();
-      if (bytes != null && bytes.isNotEmpty) {
-        final saved =
-            await VideoThumbnailService.instance.saveScreenshot(videoPath, bytes);
-        if (mounted && saved != null) {
-          setState(() {
-            _thumbPath = saved;
-            _duration = dur > Duration.zero ? dur : null;
-          });
-        }
-      }
-    } catch (_) {
-      // Нет кодека / сеть недоступна — показываем плейсхолдер.
-    } finally {
-      if (mounted) {
-        setState(() {
-          _thumbLoading = false;
-          _captureController = null;
-        });
-      }
-      _capturePlayer?.dispose();
-      _capturePlayer = null;
-    }
-  }
 
   // ── UI ───────────────────────────────────────────────────────────────────
 
@@ -1505,29 +1384,19 @@ class _VideoPreviewState extends State<_VideoPreview> {
   }
 
   Widget _buildBackdrop() {
-    if (_thumbLoading) {
-      return Container(
-        width: 220,
-        height: 160,
-        color: const Color(0xFF1A1A1A),
-        alignment: Alignment.center,
-        child: const SizedBox(
-          width: 28,
-          height: 28,
-          child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white38),
-        ),
-      );
-    }
-
-    final thumb = _thumbPath;
-    if (thumb != null) {
-      return Image.file(
-        File(thumb),
+    final thumbUrl = ApiConfig.resolveMediaUrl(attachment.thumbnailPath);
+    debugPrint('[VideoPreview] path=${attachment.thumbnailPath}  url=$thumbUrl');
+    if (thumbUrl != null) {
+      return Image.network(
+        thumbUrl,
         width: 220,
         height: 160,
         fit: BoxFit.cover,
         gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => _placeholderBackdrop(),
+        errorBuilder: (ctx, err, stack) {
+          debugPrint('[VideoPreview] IMAGE ERROR: $err  url=$thumbUrl');
+          return _placeholderBackdrop();
+        },
       );
     }
     return _placeholderBackdrop();
@@ -1549,13 +1418,12 @@ class _VideoPreviewState extends State<_VideoPreview> {
 
   @override
   Widget build(BuildContext context) {
-    final attachment = widget.attachment;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final dur = _duration;
+    final dur = attachment.duration;
 
     return GestureDetector(
       onTap: () =>
-          MediaViewerScreen.open(context, attachment, allMedia: widget.allMedia),
+          MediaViewerScreen.open(context, attachment, allMedia: allMedia),
       child: _MediaFrame(
         isDark: isDark,
         child: ClipRRect(
@@ -1566,21 +1434,8 @@ class _VideoPreviewState extends State<_VideoPreview> {
               // ── Фоновый кадр ─────────────────────────────────────────────
               _buildBackdrop(),
 
-              // ── Скрытый VideoController для захвата кадра на десктопе ────
-              if (_captureController != null)
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  child: SizedBox(
-                    width: 1,
-                    height: 1,
-                    child: Video(controller: _captureController!),
-                  ),
-                ),
-
               // ── Кнопка Play ──────────────────────────────────────────────
-              if (!_thumbLoading)
-                Container(
+              Container(
                   width: 52,
                   height: 52,
                   decoration: BoxDecoration(
@@ -2670,13 +2525,13 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
     }
 
     if (!_vpReady || (_vpc == null && _mkController == null)) {
-      // Пока видео инициализируется — показываем кэшированное превью.
-      final thumb = VideoThumbnailService.instance.getCachedThumb(_att.path);
+      // Пока видео инициализируется — показываем серверное превью.
+      final thumbUrl = ApiConfig.resolveMediaUrl(_att.thumbnailPath);
       return Stack(
         fit: StackFit.expand,
         children: [
-          if (thumb != null)
-            Image.file(File(thumb), fit: BoxFit.cover, gaplessPlayback: true)
+          if (thumbUrl != null)
+            Image.network(thumbUrl, fit: BoxFit.cover, gaplessPlayback: true)
           else
             const ColoredBox(color: Colors.black),
           const Center(
@@ -3007,13 +2862,12 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
 
   Widget _buildThumbContent(Attachment att) {
     if (att.type == AttachmentType.video) {
-      // Синхронная проверка кэша — без FutureBuilder, без мерцания.
-      final thumb = VideoThumbnailService.instance.getCachedThumb(att.path);
-      if (thumb != null) {
+      final thumbUrl = ApiConfig.resolveMediaUrl(att.thumbnailPath);
+      if (thumbUrl != null) {
         return Stack(
           fit: StackFit.expand,
           children: [
-            Image.file(File(thumb), fit: BoxFit.cover, gaplessPlayback: true),
+            Image.network(thumbUrl, fit: BoxFit.cover, gaplessPlayback: true),
             const Center(
               child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 20),
             ),

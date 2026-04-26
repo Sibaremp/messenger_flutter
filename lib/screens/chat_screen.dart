@@ -67,6 +67,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── Режим выделения ───────────────────────────────────
   final Set<String> _selectedIds = {};
   bool _isSelectionMode = false;
+  bool _isUploadingFile = false;
 
   // ── Режим редактирования ──────────────────────────────
   Message? _editingMessage;
@@ -172,6 +173,16 @@ class _ChatScreenState extends State<ChatScreen> {
         if (chatId != _currentChat.id) return;
         setState(() {
           _setMessages(_messages.where((m) => !messageIds.contains(m.id)).toList());
+          if (_editingMessage != null && messageIds.contains(_editingMessage!.id)) {
+            _editingMessage = null;
+            _controller.clear();
+            _pendingMentions.clear();
+            _mentionQuery = null;
+            _mentionStart = null;
+          }
+          if (_replyingTo != null && messageIds.contains(_replyingTo!.id)) {
+            _replyingTo = null;
+          }
         });
       case ChatUpdated(:final chat):
         if (chat.id != _currentChat.id) return;
@@ -295,21 +306,36 @@ class _ChatScreenState extends State<ChatScreen> {
             .toList();
     _pendingMentions.clear();
 
-    final updated = await widget.service.sendMessage(
-      chatId: _currentChat.id,
-      text: text,
-      attachment: attachment,
-      replyTo: reply,
-      mentions: capturedMentions,
-    );
-    if (!mounted) return;
-    setState(() {
-      _setMessages(updated.messages);
-      _currentChat = updated;
-      _replyingTo = null;
-    });
-    widget.onChatUpdated(updated);
-    _scrollToBottom();
+    // Показываем индикатор загрузки при отправке файла.
+    final hasLocalFile = attachment != null;
+    if (hasLocalFile && mounted) setState(() => _isUploadingFile = true);
+
+    try {
+      final updated = await widget.service.sendMessage(
+        chatId: _currentChat.id,
+        text: text,
+        attachment: attachment,
+        replyTo: reply,
+        mentions: capturedMentions,
+      );
+      if (!mounted) return;
+      setState(() {
+        _isUploadingFile = false;
+        _setMessages(updated.messages);
+        _currentChat = updated;
+        _replyingTo = null;
+      });
+      widget.onChatUpdated(updated);
+      _scrollToBottom();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isUploadingFile = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка отправки: $e'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   void _startReply(Message message) {
@@ -337,17 +363,26 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _editingMessage = null);
     _controller.clear();
 
-    final updated = await widget.service.editMessage(
-      chatId: _currentChat.id,
-      messageId: editedId,
-      newText: text,
-    );
-    if (!mounted) return;
-    setState(() {
-      _setMessages(updated.messages);
-      _currentChat = updated;
-    });
-    widget.onChatUpdated(updated);
+    try {
+      final updated = await widget.service.editMessage(
+        chatId: _currentChat.id,
+        messageId: editedId,
+        newText: text,
+      );
+      if (!mounted) return;
+      setState(() {
+        _setMessages(updated.messages);
+        _currentChat = updated;
+      });
+      widget.onChatUpdated(updated);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Не удалось сохранить изменения: $e'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   void _cancelEdit() {
@@ -370,6 +405,15 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _setMessages(updated.messages);
       _currentChat = updated;
+      // Сбрасываем режим редактирования / ответа, если они указывали на удалённое сообщение.
+      if (_editingMessage?.id == message.id) {
+        _editingMessage = null;
+        _controller.clear();
+        _pendingMentions.clear();
+        _mentionQuery = null;
+        _mentionStart = null;
+      }
+      if (_replyingTo?.id == message.id) _replyingTo = null;
     });
     widget.onChatUpdated(updated);
   }
@@ -381,16 +425,36 @@ class _ChatScreenState extends State<ChatScreen> {
       _isSelectionMode = false;
     });
 
-    final updated = await widget.service.deleteMessages(
-      chatId: _currentChat.id,
-      messageIds: ids,
-    );
-    if (!mounted) return;
-    setState(() {
-      _setMessages(updated.messages);
-      _currentChat = updated;
-    });
-    widget.onChatUpdated(updated);
+    try {
+      final updated = await widget.service.deleteMessages(
+        chatId: _currentChat.id,
+        messageIds: ids,
+      );
+      if (!mounted) return;
+      setState(() {
+        _setMessages(updated.messages);
+        _currentChat = updated;
+        // Сбрасываем режим редактирования / ответа, если их сообщения удалены.
+        if (_editingMessage != null && ids.contains(_editingMessage!.id)) {
+          _editingMessage = null;
+          _controller.clear();
+          _pendingMentions.clear();
+          _mentionQuery = null;
+          _mentionStart = null;
+        }
+        if (_replyingTo != null && ids.contains(_replyingTo!.id)) {
+          _replyingTo = null;
+        }
+      });
+      widget.onChatUpdated(updated);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Ошибка удаления: $e'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   // ── Выделение ─────────────────────────────────────────
@@ -1519,6 +1583,10 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
       body: Column(
         children: [
+          // ── Индикатор загрузки файла ──────────────────────────────────
+          if (_isUploadingFile)
+            const LinearProgressIndicator(),
+
           // ── Бар закреплённых сообщений (Telegram-style) ──
           if (_currentChat.pinnedMessageIds.isNotEmpty)
             PinnedMessagesBar(

@@ -35,7 +35,7 @@ class ApiConfig {
   /// - абсолютный URL с `localhost`/`127.0.0.1` → заменяется на текущий хост
   ///   (чтобы картинки грузились на реальном устройстве / эмуляторе)
   /// - любой другой абсолютный URL → возвращается как есть
-  /// - серверный путь `/uploads/...` → префиксуется origin
+  /// - серверный путь `/uploads/...`, `/thumbnails/...` и т.д. → префиксуется origin
   /// - всё остальное (локальный путь устройства) → возвращается как есть
   static String? resolveMediaUrl(String? path) {
     if (path == null || path.isEmpty) return null;
@@ -63,7 +63,8 @@ class ApiConfig {
         path.startsWith('https://') ||
         path.startsWith('/uploads/') ||
         path.startsWith('/avatars/') ||
-        path.startsWith('/media/');
+        path.startsWith('/media/') ||
+        path.startsWith('/thumbnails/');
   }
 
   /// Таймаут HTTP-запросов.
